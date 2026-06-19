@@ -1,0 +1,93 @@
+openapi: 3.1.0
+info:
+  title: agentOps Oracle API
+  version: 0.1.0
+  description: >
+    The single synchronous entry point for an agent that has hit a 402 paywall
+    (doc 02 §4). The agent sends the raw 402 body; agentOps verifies, evaluates
+    policy (deny-by-default, fail-closed), signs from the agent float via KMS, and
+    returns a signed X-PAYMENT header or a structured deny. This is agent-facing.
+    The operator dashboard NEVER calls it (doc 05 §9); it observes the effects via
+    the Monitoring/Query surface.
+
+servers:
+  - url: https://api.agentops.example
+    description: Phase-1 (Arc testnet)
+
+components:
+  securitySchemes:
+    AgentBearer:
+      type: http
+      scheme: bearer
+      description: >
+        Agent request key `ag_live_…`. Resolved hashed and constant-time to
+        {agent_id, org_id, scopes}, tenant-bound to org_id. Admin `sk_` keys are
+        rejected here (doc 02 §4 step 3).
+  schemas:
+    AuthorizeRequest:
+      type: object
+      required: [agent_id, raw_402_body, request_context]
+      additionalProperties: false
+      properties:
+        agent_id:
+          type: string
+          example: agt_9k2
+        raw_402_body:
+          type: object
+          description: The verbatim 402 challenge from the resource server, parsed server-side.
+        request_context:
+          type: object
+          required: [method, url]
+          properties:
+            method: { type: string, example: GET }
+            url: { type: string, format: uri }
+    AuthorizeAllow:
+      type: object
+      required: [outcome, payment_id, x_payment]
+      properties:
+        outcome: { type: string, enum: [ALLOW] }
+        payment_id: { type: string }
+        x_payment:
+          type: string
+          description: The signed X-PAYMENT header value the agent replays to the paywall.
+    AuthorizeDeny:
+      type: object
+      required: [outcome, reason]
+      properties:
+        outcome: { type: string, enum: [DENY] }
+        reason:
+          type: string
+          enum:
+            - spend_cap_exceeded
+            - allocation_exceeded
+            - per_transaction_max_exceeded
+            - velocity_exceeded
+            - service_not_allowed
+            - rail_not_permitted
+            - org_suspended
+
+paths:
+  /v1/payment/authorize:
+    post:
+      operationId: authorizePayment
+      summary: Authorize (sign) or deny a single agent payment.
+      security:
+        - AgentBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthorizeRequest' }
+      responses:
+        '200':
+          description: ALLOW — payment signed; X-PAYMENT returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthorizeAllow' }
+        '403':
+          description: DENY — policy denied the payment, with a structured reason.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthorizeDeny' }
+        '401':
+          description: Authentication failed (bad/expired credential, or an admin sk_ key).
