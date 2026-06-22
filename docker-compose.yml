@@ -1,0 +1,39 @@
+# Local infra for Casper Guard backend development and integration tests.
+#
+# Redis runs with AOF enabled (appendfsync everysec) because NFR-02 requires the hot
+# tier to be durable: an acknowledged hold must survive a restart. SPIKE-06 calibrates
+# the latency cost of this setting against the hot-path budget.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: casperguard
+      POSTGRES_PASSWORD: casperguard
+      POSTGRES_DB: casperguard
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U casperguard -d casperguard']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--appendonly', 'yes', '--appendfsync', 'everysec']
+    ports:
+      - '6379:6379'
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:
