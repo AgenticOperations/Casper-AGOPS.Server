@@ -60,3 +60,58 @@ export function createCasperRpcSettlementReader(port: DeployReader): CasperGuard
     },
   };
 }
+
+/**
+ * Live DeployReader backed by the Casper node JSON-RPC (`info_get_deploy`).
+ *
+ * Normalizes the wire `execution_results[].result` ({ Success } | { Failure }) into {@link DeployFinality}.
+ * Network/HTTP failures fail-closed to `found: false` → the reader reports `pending` (never `settled`).
+ */
+export function createLiveDeployReader(cfg: { rpcUrl: string }): DeployReader {
+  return {
+    async getDeploy(hash: string): Promise<DeployFinality> {
+      const cleaned = hash.startsWith('0x') ? hash.slice(2) : hash;
+      let res: Response;
+      try {
+        res = await fetch(cfg.rpcUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'info_get_deploy', params: { deploy_hash: cleaned } }),
+        });
+      } catch {
+        return { found: false };
+      }
+      if (!res.ok) return { found: false };
+      const body = (await res.json()) as { result?: { execution_results?: unknown[] } };
+      const execs = body.result?.execution_results ?? [];
+      // A deploy known to the node but not yet executed reports an empty execution_results array.
+      if (execs.length === 0) return { found: true, finalized: false, success: false };
+      const result =
+        (execs[0] as { result?: { Success?: unknown; Failure?: { error_message?: string } } }).result ?? {};
+      if ('Success' in result && result.Success) {
+        return { found: true, finalized: true, success: true, txHash: cleaned };
+      }
+      const error = (result as { Failure?: { error_message?: string } }).Failure?.error_message ?? 'execution_error';
+      return { found: true, finalized: true, success: false, error };
+    },
+  };
+}
+
+/**
+ * Compose a live reader with an operator-supplied body fallback (non-breaking).
+ *
+ * The live result wins when it is conclusive (settled / failed / expired). A still-`pending` or
+ * `ambiguous` live read defers to the operator-supplied body so manual reconcile keeps working.
+ */
+export function composeSettlementReader(
+  live: CasperGuardSettlementReader,
+  bodyFallback: () => CasperGuardSettlementRead,
+): CasperGuardSettlementReader {
+  return {
+    async read(decision) {
+      const r = await live.read(decision);
+      if (r.status === 'pending' || r.status === 'ambiguous') return bodyFallback();
+      return r;
+    },
+  };
+}
