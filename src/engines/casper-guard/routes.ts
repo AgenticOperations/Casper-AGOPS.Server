@@ -50,6 +50,9 @@ export interface CasperGuardDeps {
     maxSlippageBps: number;
     allowedRiskLabels: string[];
   };
+  tradeExecutor?: {
+    execute(input: { intent: { pair: string; amount: string } }): Promise<unknown>;
+  };
 }
 
 const positiveIntegerString = z.string().regex(/^[1-9][0-9]*$/);

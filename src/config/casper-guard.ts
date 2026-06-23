@@ -18,6 +18,7 @@ import {
   createLiveCasperDeploySubmitter,
   createOdraGuardRegistryAnchorer,
 } from '../lib/casper/odra-anchorer.js';
+import { createCsprTradeExecutor, UnavailableCsprTradeClient } from '../lib/casper/cspr-trade.js';
 import type { CasperGuardSigner } from '../engines/casper-guard/policy.js';
 import type { CasperGuardIntent, CasperGuardNetwork } from '../engines/casper-guard/types.js';
 
@@ -68,6 +69,14 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
       maxSlippageBps: env.CSPR_TRADE_MAX_SLIPPAGE_BPS,
       allowedRiskLabels: parseCsv(env.CSPR_TRADE_ALLOWED_RISK_LABELS),
     },
+    // SEAM: replace UnavailableCsprTradeClient with a real CsprTradeClient once access exists
+    tradeExecutor: createCsprTradeExecutor({
+      policy: {
+        maxSlippageBps: env.CSPR_TRADE_MAX_SLIPPAGE_BPS,
+        allowedRiskLabels: parseCsv(env.CSPR_TRADE_ALLOWED_RISK_LABELS),
+      },
+      client: new UnavailableCsprTradeClient(),
+    }),
   };
 }
 
