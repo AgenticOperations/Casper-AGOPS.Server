@@ -14,6 +14,10 @@ import {
   createCasperRpcSettlementReader,
   createLiveDeployReader,
 } from '../lib/casper/settlement-reader.js';
+import {
+  createLiveCasperDeploySubmitter,
+  createOdraGuardRegistryAnchorer,
+} from '../lib/casper/odra-anchorer.js';
 import type { CasperGuardSigner } from '../engines/casper-guard/policy.js';
 import type { CasperGuardIntent, CasperGuardNetwork } from '../engines/casper-guard/types.js';
 
@@ -43,12 +47,23 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
         }
       : {}),
     odra: odraConfigured
-      ? {
-          configured: false,
-          reason: 'odra_anchorer_not_wired',
-          contractPackage: env.CASPER_GUARD_ODRA_PACKAGE_HASH,
-        }
+      ? { configured: true }
       : { configured: false, reason: 'odra_contract_not_bound' },
+    ...(odraConfigured
+      ? {
+          anchorer: createOdraGuardRegistryAnchorer({
+            packageHash: env.CASPER_GUARD_ODRA_PACKAGE_HASH,
+            entryPoint: env.CASPER_GUARD_ODRA_ENTRY_POINT,
+            // SEAM: swap createLiveCasperDeploySubmitter for a real client once contract is deployed
+            submitter: createLiveCasperDeploySubmitter({
+              rpcUrl: env.CASPER_GUARD_ODRA_RPC_URL,
+              pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH,
+              algorithm: env.CASPER_GUARD_ODRA_ALGORITHM,
+              chainName: 'casper-test',
+            }),
+          }),
+        }
+      : {}),
     trade: {
       maxSlippageBps: env.CSPR_TRADE_MAX_SLIPPAGE_BPS,
       allowedRiskLabels: parseCsv(env.CSPR_TRADE_ALLOWED_RISK_LABELS),

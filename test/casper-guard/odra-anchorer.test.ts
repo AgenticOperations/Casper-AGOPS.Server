@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createOdraGuardRegistryAnchorer } from '../../src/lib/casper/odra-anchorer.js';
+import { buildCasperGuardDeps } from '../../src/config/casper-guard.js';
+import { loadEnv } from '../../src/config/env.js';
 import type { CasperGuardDecisionRecord } from '../../src/engines/casper-guard/store.js';
 
 const decision = { decisionId: 'cgd_9', orgId: 'org_1', agentId: 'agt_1' } as unknown as CasperGuardDecisionRecord;
@@ -32,5 +34,36 @@ describe('OdraGuardRegistryAnchorer', () => {
     await expect(
       anchorer.anchorDecision({ decisionId: 'cgd_9', decisionHash: 'sha256:abc', decision }),
     ).rejects.toThrow('node_unreachable');
+  });
+});
+
+describe('buildCasperGuardDeps odra wiring', () => {
+  const SCHEMA_MIN = {
+    DATABASE_URL: 'postgres://x:y@localhost:5432/z',
+    REDIS_URL: 'redis://localhost:6379',
+    ARC_RPC_URL: 'https://rpc.example',
+    ARC_CHAIN_ID: '5042002',
+    ARC_USDC_ADDRESS: '0x3600000000000000000000000000000000000000',
+    GATEWAY_WALLET_ADDRESS: '0x0077777d7EBA4688BDeF3E311b846F25870A19B9',
+    GATEWAY_MINTER_ADDRESS: '0x0022222ABE238Cc2C7Bb1f21003F0a260052475B',
+  };
+
+  it('stays honest-blocked when odra package hash / rpc are not set', () => {
+    const env = loadEnv(SCHEMA_MIN as never);
+    const deps = buildCasperGuardDeps(env);
+    expect(deps.odra?.configured).toBe(false);
+    expect(deps.anchorer).toBeUndefined();
+  });
+
+  it('wires a real anchorer and sets odra.configured=true when package hash + rpc are set', () => {
+    const env = loadEnv({
+      ...SCHEMA_MIN,
+      CASPER_GUARD_ODRA_PACKAGE_HASH: 'e'.repeat(64),
+      CASPER_GUARD_ODRA_RPC_URL: 'https://node.testnet.casper.network/rpc',
+      CASPER_GUARD_SIGNER_PEM_PATH: '/tmp/key.pem',
+    } as never);
+    const deps = buildCasperGuardDeps(env);
+    expect(deps.odra?.configured).toBe(true);
+    expect(typeof deps.anchorer?.anchorDecision).toBe('function');
   });
 });

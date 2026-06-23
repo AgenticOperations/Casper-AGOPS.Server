@@ -43,6 +43,9 @@ const EnvSchema = z.object({
     .enum(['disabled', 'local-testnet', 'operator-wallet', 'enterprise-custody'])
     .default('disabled'),
   CASPER_GUARD_SIGNER_PEM_PATH: z.string().default(''),
+  // Algorithm the local-testnet PEM was generated under. casper-client keygen defaults to ed25519;
+  // a key exported from Casper Wallet / an EC PEM is secp256k1. Must match the PEM or signing is invalid.
+  CASPER_GUARD_SIGNER_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('ed25519'),
   CASPER_GUARD_NETWORKS: z.string().min(1).default('casper:casper-test'),
   CASPER_GUARD_MCP_URL: z.string().min(1).default('/v1/casper-guard/mcp'),
   CASPER_GUARD_FACILITATOR_RPC_URL: z.string().url().or(z.literal('')).default(''),
@@ -52,6 +55,8 @@ const EnvSchema = z.object({
     .or(z.literal(''))
     .default(''),
   CASPER_GUARD_ODRA_RPC_URL: z.string().url().or(z.literal('')).default(''),
+  CASPER_GUARD_ODRA_ENTRY_POINT: z.string().min(1).default('anchor_decision'),
+  CASPER_GUARD_ODRA_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('secp256k1'),
   CSPR_TRADE_MAX_SLIPPAGE_BPS: z.coerce.number().int().min(0).max(10_000).default(100),
   CSPR_TRADE_ALLOWED_RISK_LABELS: z.string().min(1).default('low,medium'),
 
