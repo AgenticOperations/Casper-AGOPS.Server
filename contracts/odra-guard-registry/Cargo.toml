@@ -6,15 +6,10 @@ edition = "2021"
 [dependencies]
 odra = { version = "2", default-features = false }
 
-[lib]
-crate-type = ["cdylib", "rlib"]
+[build-dependencies]
+odra-build = { version = "2" }
 
 [[bin]]
 name = "odra_guard_registry_build_contract"
 path = "bin/build_contract.rs"
-required-features = ["disable-allocator"]
 test = false
-
-[features]
-default = []
-disable-allocator = []

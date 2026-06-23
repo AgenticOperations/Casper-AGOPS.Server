@@ -1,3 +1,7 @@
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
+extern crate alloc;
+
 use odra::prelude::*;
 
 /// Guard registry: an append-only anchor of Casper Guard decisions.
