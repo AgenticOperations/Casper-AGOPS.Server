@@ -10,6 +10,10 @@ import {
   type CasperNetwork,
 } from '../lib/casper/x402.js';
 import type { CasperGuardDeps } from '../engines/casper-guard/routes.js';
+import {
+  createCasperRpcSettlementReader,
+  createLiveDeployReader,
+} from '../lib/casper/settlement-reader.js';
 import type { CasperGuardSigner } from '../engines/casper-guard/policy.js';
 import type { CasperGuardIntent, CasperGuardNetwork } from '../engines/casper-guard/types.js';
 
@@ -26,13 +30,18 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
     ...(signer ? { signer } : {}),
     networks: parseNetworks(env.CASPER_GUARD_NETWORKS),
     mcpUrl: env.CASPER_GUARD_MCP_URL,
-    liveSettlement: {
-      configured: false,
-      reason:
-        env.CASPER_GUARD_FACILITATOR_RPC_URL === ''
-          ? 'casper_facilitator_not_configured'
-          : 'casper_facilitator_settlement_worker_not_wired',
-    },
+    liveSettlement:
+      env.CASPER_GUARD_FACILITATOR_RPC_URL !== ''
+        ? { configured: true }
+        : { configured: false, reason: 'casper_facilitator_not_configured' },
+    ...(env.CASPER_GUARD_FACILITATOR_RPC_URL !== ''
+      ? {
+          settlementReaderFactory: () =>
+            createCasperRpcSettlementReader(
+              createLiveDeployReader({ rpcUrl: env.CASPER_GUARD_FACILITATOR_RPC_URL }),
+            ),
+        }
+      : {}),
     odra: odraConfigured
       ? {
           configured: false,
@@ -84,7 +93,10 @@ function buildSigner(env: Env): CasperGuardSigner | undefined {
     case 'local-testnet':
       if (env.CASPER_GUARD_SIGNER_PEM_PATH === '') return undefined;
       return createCasperGuardRuntimeSigner(
-        CasperSignerProvider.localTestnet({ pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH }),
+        CasperSignerProvider.localTestnet({
+          pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH,
+          algorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
+        }),
       );
     case 'operator-wallet':
       return undefined;

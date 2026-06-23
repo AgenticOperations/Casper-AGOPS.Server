@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { composeSettlementReader } from '../../lib/casper/settlement-reader.js';
 import {
   CASPER_X402_HEADER_NAME,
   CASPER_X402_TESTNET_NETWORK,
@@ -20,6 +21,7 @@ import {
 import {
   reconcileCasperGuardDecision,
   type CasperGuardSettlementRead,
+  type CasperGuardSettlementReader,
   type GuardRegistryAnchorer,
 } from './reconcile-worker.js';
 import { readCasperGuardDecision, type CasperGuardDecisionRecord } from './store.js';
@@ -40,6 +42,8 @@ export interface CasperGuardDeps {
   networks?: CasperGuardNetwork[];
   mcpUrl?: string;
   liveSettlement?: CasperGuardReadiness;
+  /** Factory that produces a live settlement reader (injected by config when CASPER_GUARD_FACILITATOR_RPC_URL is set). */
+  settlementReaderFactory?: () => CasperGuardSettlementReader;
   odra?: CasperGuardReadiness & { contractPackage?: string };
   anchorer?: GuardRegistryAnchorer;
   trade?: {
@@ -270,7 +274,9 @@ export function registerCasperGuardRoutes(app: FastifyInstance): void {
         {
           pool: app.deps.pg,
           redis: app.deps.redis,
-          settlementReader: { read: () => Promise.resolve(settlementRead(parsed.data.settlement)) },
+          settlementReader: deps?.settlementReaderFactory
+            ? composeSettlementReader(deps.settlementReaderFactory(), () => settlementRead(parsed.data.settlement))
+            : { read: () => Promise.resolve(settlementRead(parsed.data.settlement)) },
           ...(deps?.anchorer ? { anchorer: deps.anchorer } : {}),
         },
         { decisionId, agentId: auth.agent.agentId },
