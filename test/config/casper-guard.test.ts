@@ -62,6 +62,13 @@ describe('Casper Guard runtime config', () => {
     expect(deps.trade).toEqual({ maxSlippageBps: 100, allowedRiskLabels: ['low', 'medium'] });
   });
 
+  it('flips live_settlement to configured:true when a facilitator rpc url is provided', () => {
+    const env = loadEnv({ ...BASE_ENV, CASPER_GUARD_FACILITATOR_RPC_URL: 'https://node.testnet.casper.network/rpc' });
+    const deps = buildCasperGuardDeps(env);
+    expect(deps.liveSettlement).toEqual({ configured: true });
+    expect(typeof deps.settlementReaderFactory).toBe('function');
+  });
+
   it('builds a local testnet signer only when a PEM path is supplied', () => {
     const withoutPem = buildCasperGuardDeps(
       loadEnv({ ...BASE_ENV, CASPER_GUARD_SIGNER_MODE: 'local-testnet' }),
