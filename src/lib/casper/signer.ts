@@ -7,8 +7,16 @@ import {
 const importRuntime = (specifier: string): Promise<unknown> =>
   import(/* @vite-ignore */ specifier) as Promise<unknown>;
 
+/**
+ * casper-js-sdk `KeyAlgorithm` numeric values (PublicKey.d.ts): ED25519 = 1, SECP256K1 = 2. The Casper
+ * signer must load the PEM with the SAME algorithm the key was generated under — a secp256k1 PEM loaded as
+ * ed25519 (the library default) yields a wrong/invalid key. We pass the value explicitly per-config.
+ */
+export const CASPER_KEY_ALGORITHM = { ed25519: 1, secp256k1: 2 } as const;
+export type CasperKeyAlgorithmName = keyof typeof CASPER_KEY_ALGORITHM;
+
 type CasperX402Runtime = {
-  createClientCasperSigner(pemPath: string, algorithm?: never): Promise<CasperClientSigner>;
+  createClientCasperSigner(pemPath: string, algorithm?: number): Promise<CasperClientSigner>;
   toClientCasperSigner(privateKey: unknown): CasperClientSigner;
 };
 
@@ -34,7 +42,8 @@ type LocalTestnetSignerConfig = {
   mode: 'local-testnet';
   privateKey?: unknown;
   pemPath?: string;
-  algorithm?: unknown;
+  /** Key algorithm the PEM was generated under. Defaults to ed25519 when omitted. */
+  algorithm?: CasperKeyAlgorithmName;
 };
 
 type OperatorWalletSignerConfig = {
@@ -106,7 +115,10 @@ export class CasperSignerProvider {
         'Local Casper signer requires explicit testnet private key material',
       );
     }
-    return casperX402.createClientCasperSigner(pemPath, this.config.algorithm as never);
+    // Load the PEM under the algorithm it was generated with (ed25519 default). A secp256k1 PEM MUST be
+    // loaded as secp256k1 or signing produces an invalid key.
+    const algorithm = CASPER_KEY_ALGORITHM[this.config.algorithm ?? 'ed25519'];
+    return casperX402.createClientCasperSigner(pemPath, algorithm);
   }
 
   private unavailableModeError(): CasperSignerProviderError {
