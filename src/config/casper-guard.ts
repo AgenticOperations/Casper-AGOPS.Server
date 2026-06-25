@@ -26,6 +26,7 @@ import {
 } from '../lib/casper/cspr-trade.js';
 import type { CasperGuardSigner } from '../engines/casper-guard/policy.js';
 import type { CasperGuardIntent, CasperGuardNetwork } from '../engines/casper-guard/types.js';
+import { createNativeEvmTransferSubmitter } from '../lib/evm/evm-submitter.js';
 
 export interface CasperClientSignerProvider {
   mode: CasperSignerMode;
@@ -96,6 +97,32 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
             algorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
             chainName: 'casper-test',
           }),
+        }
+      : {}),
+    // EVM networks: policy enforcement always on Casper; actual tx on Sepolia / Base Sepolia.
+    // Submitters are only wired when a private key AND the network's RPC URL are set.
+    ...(env.EVM_PRIVATE_KEY !== ''
+      ? {
+          evmTransferSubmitters: {
+            ...(env.EVM_SEPOLIA_RPC_URL !== ''
+              ? {
+                  'evm:sepolia': createNativeEvmTransferSubmitter({
+                    network: 'evm:sepolia',
+                    privateKey: env.EVM_PRIVATE_KEY as `0x${string}`,
+                    rpcUrl: env.EVM_SEPOLIA_RPC_URL,
+                  }),
+                }
+              : {}),
+            ...(env.EVM_BASE_SEPOLIA_RPC_URL !== ''
+              ? {
+                  'evm:base-sepolia': createNativeEvmTransferSubmitter({
+                    network: 'evm:base-sepolia',
+                    privateKey: env.EVM_PRIVATE_KEY as `0x${string}`,
+                    rpcUrl: env.EVM_BASE_SEPOLIA_RPC_URL,
+                  }),
+                }
+              : {}),
+          },
         }
       : {}),
   };
@@ -184,7 +211,12 @@ function parseCsv(value: string): string[] {
 }
 
 function isCasperGuardNetwork(value: string): value is CasperGuardNetwork {
-  return value === 'casper:casper-test' || value === 'casper:casper';
+  return (
+    value === 'casper:casper-test' ||
+    value === 'casper:casper' ||
+    value === 'evm:sepolia' ||
+    value === 'evm:base-sepolia'
+  );
 }
 
 function sha256(value: string): string {

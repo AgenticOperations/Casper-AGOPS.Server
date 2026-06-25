@@ -26,6 +26,7 @@ import {
 } from './reconcile-worker.js';
 import { readCasperGuardDecision, type CasperGuardDecisionRecord } from './store.js';
 import type { NativeCsprTransferSubmitter } from '../../lib/casper/odra-anchorer.js';
+import type { NativeEvmTransferSubmitter } from '../../lib/evm/evm-submitter.js';
 import {
   normalizeCasperGuardIntent,
   type CasperGuardActionKind,
@@ -55,6 +56,8 @@ export interface CasperGuardDeps {
     execute(input: { intent: { pair: string; amount: string } }): Promise<unknown>;
   };
   nativeTransferSubmitter?: NativeCsprTransferSubmitter;
+  /** Per-network EVM submitters. Key is the CasperGuardNetwork string (e.g. "evm:sepolia"). */
+  evmTransferSubmitters?: Partial<Record<CasperGuardNetwork, NativeEvmTransferSubmitter>>;
 }
 
 const positiveIntegerString = z.string().regex(/^[1-9][0-9]*$/);
@@ -445,11 +448,12 @@ function readiness(
   return { configured: true };
 }
 
-function allowedActionsFromRails(rails: readonly string[]): CasperGuardActionKind[] {
+export function allowedActionsFromRails(rails: readonly string[]): CasperGuardActionKind[] {
   const out = new Set<CasperGuardActionKind>();
   if (rails.includes('casper-x402')) out.add('x402-payment');
   if (rails.includes('cspr-trade')) out.add('cspr-trade');
   if (rails.includes('casper-deploy')) out.add('casper-deploy');
+  if (rails.includes('evm-transfer')) out.add('evm-transfer');
   return [...out];
 }
 
@@ -554,6 +558,8 @@ function railForAction(action: CasperGuardActionKind): string {
       return 'cspr-trade';
     case 'casper-deploy':
       return 'casper-deploy';
+    case 'evm-transfer':
+      return 'evm-transfer';
   }
 }
 

@@ -1,13 +1,15 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authenticateAgent } from '../oracle/auth.js';
-import { normalizeCasperGuardIntent } from './types.js';
+import { normalizeCasperGuardIntent, type CasperGuardNetwork } from './types.js';
 import {
   auditExport,
   authorizeWithStoredPolicy,
   intentFromPaymentRequired,
+  allowedActionsFromRails,
   type CasperGuardDeps,
 } from './routes.js';
+import { CASPER_X402_TESTNET_NETWORK } from '../../lib/casper/x402.js';
 import {
   markCasperGuardDecisionSettled,
   readCasperGuardDecision,
@@ -62,7 +64,7 @@ const TOOL_DESCRIPTORS = [
   },
   {
     name: 'casper_guard_authorize_action',
-    description: 'Authorize a CSPR.trade or direct Casper action intent.',
+    description: 'Authorize a CSPR.trade, direct Casper action, or EVM transfer intent. Policy enforcement always runs on Casper; the actual transaction executes on the network specified in the intent.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -149,7 +151,7 @@ export function registerCasperGuardMcpRoute(app: FastifyInstance): void {
           .code(200)
           .send(rpcResult(rpc.id, await auditExportTool(app, request.headers.authorization, call.data.arguments)));
       case 'casper_guard_policy_check':
-        return reply.code(200).send(rpcResult(rpc.id, await policyCheckTool(app, request.headers.authorization, call.data.arguments)));
+        return reply.code(200).send(rpcResult(rpc.id, await policyCheckTool(app, deps, request.headers.authorization, call.data.arguments)));
       case 'casper_guard_reconcile':
         return reply
           .code(200)
@@ -239,6 +241,7 @@ async function auditExportTool(
 
 async function policyCheckTool(
   app: FastifyInstance,
+  deps: CasperGuardDeps | undefined,
   authz: string | undefined,
   args: Record<string, unknown>,
 ) {
@@ -250,12 +253,29 @@ async function policyCheckTool(
       agentId: auth.agentId,
     }),
   );
+
+  const allowedNetworks = deps?.networks ?? [CASPER_X402_TESTNET_NETWORK];
+  const allowedActions = allowedActionsFromRails(policy.spend.railPermission);
+  const serviceScope = policy.spend.serviceScope;
+
+  if (!allowedActions.includes(intent.kind)) {
+    return { outcome: 'DENY', reason: 'action_not_allowed', agent_id: auth.agentId, policy_id: policy.policyId };
+  }
+  if (!allowedNetworks.includes(intent.network)) {
+    return { outcome: 'DENY', reason: 'network_not_allowed', agent_id: auth.agentId, policy_id: policy.policyId, allowed_networks: allowedNetworks };
+  }
+  if (!serviceScope.includes(intent.resourceId)) {
+    return { outcome: 'DENY', reason: 'service_not_allowed', agent_id: auth.agentId, policy_id: policy.policyId, allowed_resource_ids: serviceScope };
+  }
+
   return {
     outcome: 'CHECK',
     agent_id: auth.agentId,
     action_kind: intent.kind,
     policy_epoch: policy.policyEpoch,
     policy_id: policy.policyId,
+    allowed_networks: allowedNetworks,
+    allowed_resource_ids: serviceScope,
   };
 }
 
@@ -274,6 +294,45 @@ async function reconcileTool(
   const decision = await readCasperGuardDecision(app.deps.pg, decisionId);
   if (!decision) throw new Error('casper_guard_decision_not_found');
   if (decision.agentId !== auth.agentId) throw new Error('casper_guard_decision_agent_mismatch');
+
+  // EVM fast-path: submit ETH/ERC-20 transfer on Sepolia or Base Sepolia, then anchor proof on Casper.
+  if (
+    decision.outcome === 'ALLOW' &&
+    decision.actionKind === 'evm-transfer' &&
+    !decision.txHash &&
+    !decision.deployHash &&
+    decision.status !== 'SETTLED' &&
+    decision.status !== 'DENIED' &&
+    decision.status !== 'FAILED_TERMINAL' &&
+    decision.status !== 'EXPIRED' &&
+    decision.destination &&
+    deps.evmTransferSubmitters
+  ) {
+    const evmSubmitter = deps.evmTransferSubmitters[decision.network as CasperGuardNetwork];
+    if (evmSubmitter) {
+      const { txHash } = await evmSubmitter.submitTransfer({
+        to: decision.destination as `0x${string}`,
+        amountWei: BigInt(decision.amount),
+      });
+      await markCasperGuardDecisionSettled(app.deps.pg, { decisionId, txHash, deployHash: txHash });
+      await Promise.all([
+        settleHold(app.deps.redis, auth.agentId, decisionId),
+        settleCasperGuardHold(app.deps.pg, decisionId),
+      ]);
+      if (deps.anchorer) {
+        const refreshed = await readCasperGuardDecision(app.deps.pg, decisionId);
+        if (refreshed && refreshed.status === 'SETTLED') {
+          const decisionHash = computeCasperGuardDecisionHash(refreshed);
+          try {
+            const { txHash: anchorTxHash } = await deps.anchorer.anchorDecision({ decisionId, decisionHash, decision: refreshed });
+            return { decision_id: decisionId, status: 'SETTLED', settled: true, anchored: true, tx_hash: txHash, deploy_hash: txHash, anchor_tx_hash: anchorTxHash };
+          } catch { /* anchor failed — decision still settled */ }
+        }
+      }
+      return { decision_id: decisionId, status: 'SETTLED', settled: true, anchored: false, tx_hash: txHash, deploy_hash: txHash, anchor_tx_hash: null };
+    }
+    // Submitter not configured for this network — fall through to FSM
+  }
 
   if (
     decision.outcome === 'ALLOW' &&

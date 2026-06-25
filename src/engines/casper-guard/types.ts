@@ -3,8 +3,8 @@ import type { CasperGuardAsset } from '../../contracts/index.js';
 
 export type { CasperGuardActionKind, CasperGuardAsset } from '../../contracts/index.js';
 
-export const CASPER_GUARD_NETWORKS = ['casper:casper-test', 'casper:casper'] as const;
-export const CASPER_GUARD_ACTION_KINDS = ['x402-payment', 'cspr-trade', 'casper-deploy'] as const;
+export const CASPER_GUARD_NETWORKS = ['casper:casper-test', 'casper:casper', 'evm:sepolia', 'evm:base-sepolia'] as const;
+export const CASPER_GUARD_ACTION_KINDS = ['x402-payment', 'cspr-trade', 'casper-deploy', 'evm-transfer'] as const;
 
 export type CasperGuardNetwork = (typeof CASPER_GUARD_NETWORKS)[number];
 type CasperGuardCep18Asset = Extract<CasperGuardAsset, { kind: 'cep18' }>;
@@ -42,6 +42,16 @@ export type CasperGuardIntent =
       target: string;
       entryPoint?: string;
       argsHash?: string;
+    }
+  | {
+      kind: 'evm-transfer';
+      network: CasperGuardNetwork;
+      resourceId: string;
+      /** Amount in the asset's smallest unit (wei for ETH, token decimals for ERC-20). */
+      amount: string;
+      asset: CasperGuardAsset;
+      /** EVM address of the recipient (0x…). */
+      to: string;
     };
 
 export type CasperGuardDecisionStatus =
@@ -81,7 +91,23 @@ const nativeAssetInput = z
   })
   .transform((asset): CasperGuardAsset => asset);
 
-const assetInput = z.union([cep18AssetInput, nativeAssetInput]);
+const nativeEthAssetInput = z
+  .object({
+    kind: z.literal('native-eth'),
+    symbol: z.literal('ETH'),
+  })
+  .transform((asset): CasperGuardAsset => asset);
+
+const erc20AssetInput = z
+  .object({
+    kind: z.literal('erc20'),
+    address: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+    name: z.string().trim().min(1),
+    decimals: z.number().int().min(0).max(18),
+  })
+  .transform((asset): CasperGuardAsset => ({ kind: 'erc20', address: asset.address, name: asset.name, decimals: asset.decimals }));
+
+const assetInput = z.union([cep18AssetInput, nativeAssetInput, nativeEthAssetInput, erc20AssetInput]);
 
 const x402PaymentIntentInput = z
   .object({
@@ -161,7 +187,27 @@ const casperDeployIntentInput = z
     }),
   );
 
-const intentInput = z.union([x402PaymentIntentInput, csprTradeIntentInput, casperDeployIntentInput]);
+const evmTransferIntentInput = z
+  .object({
+    kind: z.literal('evm-transfer'),
+    network: networkSchema,
+    resource_id: z.string().trim().min(1),
+    amount: positiveIntegerString,
+    asset: assetInput,
+    to: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  })
+  .transform(
+    (intent): CasperGuardIntent => ({
+      kind: 'evm-transfer',
+      network: intent.network,
+      resourceId: intent.resource_id,
+      amount: intent.amount,
+      asset: intent.asset,
+      to: intent.to,
+    }),
+  );
+
+const intentInput = z.union([x402PaymentIntentInput, csprTradeIntentInput, casperDeployIntentInput, evmTransferIntentInput]);
 
 export class CasperGuardIntentError extends Error {
   constructor(message: string) {
@@ -182,6 +228,7 @@ export function casperGuardIntentPrimaryAsset(intent: CasperGuardIntent): Casper
   switch (intent.kind) {
     case 'x402-payment':
     case 'casper-deploy':
+    case 'evm-transfer':
       return intent.asset;
     case 'cspr-trade':
       return intent.fromAsset;
@@ -189,7 +236,12 @@ export function casperGuardIntentPrimaryAsset(intent: CasperGuardIntent): Casper
 }
 
 export function casperGuardAssetRef(asset: CasperGuardAsset): string {
-  return asset.kind === 'cep18' ? asset.packageHash : asset.symbol;
+  switch (asset.kind) {
+    case 'cep18': return asset.packageHash;
+    case 'native': return asset.symbol;
+    case 'native-eth': return asset.symbol;
+    case 'erc20': return asset.address;
+  }
 }
 
 export function casperGuardIntentDestination(intent: CasperGuardIntent): string | null {
@@ -200,5 +252,7 @@ export function casperGuardIntentDestination(intent: CasperGuardIntent): string 
       return intent.routeId;
     case 'casper-deploy':
       return intent.target;
+    case 'evm-transfer':
+      return intent.to;
   }
 }

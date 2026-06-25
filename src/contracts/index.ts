@@ -30,14 +30,17 @@ export type Rail =
 export type CasperGuardRail =
   | { scheme: 'casper-x402'; network: 'casper:casper-test' | 'casper:casper' }
   | { scheme: 'cspr-trade'; network: 'casper:casper-test' | 'casper:casper' }
-  | { scheme: 'casper-deploy'; network: 'casper:casper-test' | 'casper:casper' };
+  | { scheme: 'casper-deploy'; network: 'casper:casper-test' | 'casper:casper' }
+  | { scheme: 'evm-transfer'; network: 'evm:sepolia' | 'evm:base-sepolia' };
 
-export type CasperGuardActionKind = 'x402-payment' | 'cspr-trade' | 'casper-deploy';
+export type CasperGuardActionKind = 'x402-payment' | 'cspr-trade' | 'casper-deploy' | 'evm-transfer';
 export type SpendRailPermission = Rail['scheme'] | CasperGuardRail['scheme'];
 
 export type CasperGuardAsset =
   | { kind: 'cep18'; packageHash: string; name: string; version: string }
-  | { kind: 'native'; symbol: 'CSPR' };
+  | { kind: 'native'; symbol: 'CSPR' }
+  | { kind: 'native-eth'; symbol: 'ETH' }
+  | { kind: 'erc20'; address: string; name: string; decimals: number };
 
 /** Payment-state FSM. Holds are permanent through BROADCASTING until on-chain resolution. */
 export type PaymentState =

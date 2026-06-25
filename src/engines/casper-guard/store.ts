@@ -33,7 +33,7 @@ export interface CreateCasperGuardHoldInput {
   orgId: string;
   agentId: string;
   amount: string;
-  assetKind: 'cep18' | 'native';
+  assetKind: 'cep18' | 'native' | 'native-eth' | 'erc20';
   assetRef: string;
   status: 'RESERVED' | 'SETTLED' | 'RELEASED';
 }
@@ -72,7 +72,7 @@ export interface CasperGuardDecisionRecord {
   network: string;
   resourceId: string;
   amount: string;
-  assetKind: 'cep18' | 'native';
+  assetKind: 'cep18' | 'native' | 'native-eth' | 'erc20';
   assetRef: string;
   destination: string | null;
   status: CasperGuardDecisionStatus;
@@ -93,7 +93,7 @@ export interface CasperGuardDecisionRecord {
 export interface CasperGuardHoldRecord {
   holdId: string;
   amount: string;
-  assetKind: 'cep18' | 'native';
+  assetKind: 'cep18' | 'native' | 'native-eth' | 'erc20';
   assetRef: string;
   status: 'RESERVED' | 'SETTLED' | 'RELEASED';
 }
@@ -491,7 +491,7 @@ interface CasperGuardDecisionRow {
   network: string;
   resource_id: string;
   amount: string;
-  asset_kind: 'cep18' | 'native';
+  asset_kind: 'cep18' | 'native' | 'native-eth' | 'erc20';
   asset_ref: string;
   destination: string | null;
   status: CasperGuardDecisionStatus;
@@ -513,7 +513,7 @@ async function readHold(
   const result = await pool.query<{
     hold_id: string;
     amount: string;
-    asset_kind: 'cep18' | 'native';
+    asset_kind: 'cep18' | 'native' | 'native-eth' | 'erc20';
     asset_ref: string;
     status: 'RESERVED' | 'SETTLED' | 'RELEASED';
   }>(
