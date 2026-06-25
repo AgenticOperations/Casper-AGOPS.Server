@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authenticateAgent } from '../oracle/auth.js';
-import { normalizeCasperGuardIntent, type CasperGuardNetwork } from './types.js';
+import { normalizeCasperGuardIntent } from './types.js';
 import {
   auditExport,
   authorizeWithStoredPolicy,
@@ -11,7 +11,7 @@ import {
 } from './routes.js';
 import { CASPER_X402_TESTNET_NETWORK } from '../../lib/casper/x402.js';
 import {
-  markCasperGuardDecisionSettled,
+  markDecisionSettledByUser,
   readCasperGuardDecision,
   settleCasperGuardHold,
   type CasperGuardDecisionRecord,
@@ -95,12 +95,16 @@ const TOOL_DESCRIPTORS = [
   },
   {
     name: 'casper_guard_reconcile',
-    description: 'Settle an ALLOW decision on-chain and anchor it to the GuardRegistry contract. Returns the Casper deploy hash and anchor hash.',
+    description: 'Record a user-broadcast transaction against an ALLOW decision and anchor the decision proof to the Casper GuardRegistry. For casper-deploy and evm-transfer: broadcast the transaction from the user\'s own wallet first, then call this with tx_hash. For x402-payment and cspr-trade: call without tx_hash — the platform reads settlement from chain.',
     inputSchema: {
       type: 'object',
       properties: {
         agent_id: { type: 'string' },
         decision_id: { type: 'string' },
+        tx_hash: {
+          type: 'string',
+          description: 'The transaction hash from the user\'s wallet after broadcasting on Casper or EVM. Required for casper-deploy and evm-transfer intents.',
+        },
       },
       required: ['agent_id', 'decision_id'],
     },
@@ -287,112 +291,70 @@ async function reconcileTool(
 ) {
   const auth = await requireAgent(app, authz, args.agent_id);
   const decisionId = requireString(args.decision_id, 'decision_id');
+  // tx_hash is provided by the user after they broadcast their own transaction.
+  // For casper-deploy and evm-transfer this is required — the user signs and sends from their wallet.
+  const userTxHash = typeof args.tx_hash === 'string' && args.tx_hash.length > 0 ? args.tx_hash : null;
 
-  // For casper-deploy native intents: submit the real CSPR transfer if not yet broadcast,
-  // then settle immediately. The settlement reader path requires a finalized block (minutes);
-  // this path settles on broadcast so the demo shows a real deploy hash right away.
   const decision = await readCasperGuardDecision(app.deps.pg, decisionId);
   if (!decision) throw new Error('casper_guard_decision_not_found');
   if (decision.agentId !== auth.agentId) throw new Error('casper_guard_decision_agent_mismatch');
 
-  // EVM fast-path: submit ETH/ERC-20 transfer on Sepolia or Base Sepolia, then anchor proof on Casper.
+  // User-signed settlement path — covers casper-deploy (native CSPR) and evm-transfer (ETH/ERC-20).
+  // The user broadcast the tx from their own wallet and passes the tx_hash here.
+  // Platform role: record the hash, release the hold, anchor the decision proof to Casper.
   if (
     decision.outcome === 'ALLOW' &&
-    decision.actionKind === 'evm-transfer' &&
-    !decision.txHash &&
-    !decision.deployHash &&
-    decision.status !== 'SETTLED' &&
-    decision.status !== 'DENIED' &&
-    decision.status !== 'FAILED_TERMINAL' &&
-    decision.status !== 'EXPIRED' &&
-    decision.destination &&
-    deps.evmTransferSubmitters
+    (decision.actionKind === 'casper-deploy' || decision.actionKind === 'evm-transfer') &&
+    decision.status === 'RESERVED' &&
+    userTxHash
   ) {
-    const evmSubmitter = deps.evmTransferSubmitters[decision.network as CasperGuardNetwork];
-    if (evmSubmitter) {
-      const { txHash } = await evmSubmitter.submitTransfer({
-        to: decision.destination as `0x${string}`,
-        amountWei: BigInt(decision.amount),
-      });
-      await markCasperGuardDecisionSettled(app.deps.pg, { decisionId, txHash, deployHash: txHash });
-      await Promise.all([
-        settleHold(app.deps.redis, auth.agentId, decisionId),
-        settleCasperGuardHold(app.deps.pg, decisionId),
-      ]);
-      if (deps.anchorer) {
-        const refreshed = await readCasperGuardDecision(app.deps.pg, decisionId);
-        if (refreshed && refreshed.status === 'SETTLED') {
-          const decisionHash = computeCasperGuardDecisionHash(refreshed);
-          try {
-            const { txHash: anchorTxHash } = await deps.anchorer.anchorDecision({ decisionId, decisionHash, decision: refreshed });
-            return { decision_id: decisionId, status: 'SETTLED', settled: true, anchored: true, tx_hash: txHash, deploy_hash: txHash, anchor_tx_hash: anchorTxHash };
-          } catch { /* anchor failed — decision still settled */ }
-        }
-      }
-      return { decision_id: decisionId, status: 'SETTLED', settled: true, anchored: false, tx_hash: txHash, deploy_hash: txHash, anchor_tx_hash: null };
-    }
-    // Submitter not configured for this network — fall through to FSM
-  }
-
-  if (
-    decision.outcome === 'ALLOW' &&
-    decision.actionKind === 'casper-deploy' &&
-    decision.assetKind === 'native' &&
-    !decision.txHash &&
-    !decision.deployHash &&
-    decision.status !== 'SETTLED' &&
-    decision.status !== 'DENIED' &&
-    decision.status !== 'FAILED_TERMINAL' &&
-    decision.status !== 'EXPIRED' &&
-    deps.nativeTransferSubmitter &&
-    decision.destination
-  ) {
-    const { txHash } = await deps.nativeTransferSubmitter.submitTransfer({
-      toAccountHash: decision.destination,
-      amountMotes: decision.amount,
-    });
-    await markCasperGuardDecisionSettled(app.deps.pg, { decisionId, txHash, deployHash: txHash });
+    await markDecisionSettledByUser(app.deps.pg, { decisionId, txHash: userTxHash });
     await Promise.all([
       settleHold(app.deps.redis, auth.agentId, decisionId),
       settleCasperGuardHold(app.deps.pg, decisionId),
     ]);
-    // Anchor the just-settled decision if anchorer is configured
+
+    let anchorTxHash: string | null = null;
     if (deps.anchorer) {
       const refreshed = await readCasperGuardDecision(app.deps.pg, decisionId);
       if (refreshed && refreshed.status === 'SETTLED') {
         const decisionHash = computeCasperGuardDecisionHash(refreshed);
         try {
-          const { txHash: anchorTxHash } = await deps.anchorer.anchorDecision({
-            decisionId,
-            decisionHash,
-            decision: refreshed,
-          });
-          return {
-            decision_id: decisionId,
-            status: 'SETTLED',
-            settled: true,
-            anchored: true,
-            tx_hash: txHash,
-            deploy_hash: txHash,
-            anchor_tx_hash: anchorTxHash,
-          };
-        } catch {
-          // Anchor failed — decision is still settled, just not anchored yet
-        }
+          const { txHash } = await deps.anchorer.anchorDecision({ decisionId, decisionHash, decision: refreshed });
+          anchorTxHash = txHash;
+        } catch { /* anchor failed — decision is still settled */ }
       }
     }
-    const finalDecision = await readCasperGuardDecision(app.deps.pg, decisionId);
+
     return {
       decision_id: decisionId,
       status: 'SETTLED',
       settled: true,
-      anchored: false,
-      tx_hash: txHash,
-      deploy_hash: txHash,
-      anchor_tx_hash: finalDecision?.auditAnchors?.find((a) => a.status === 'confirmed')?.txHash ?? null,
+      anchored: anchorTxHash !== null,
+      tx_hash: userTxHash,
+      deploy_hash: userTxHash,
+      anchor_tx_hash: anchorTxHash,
     };
   }
 
+  // If the user did not provide tx_hash but the decision needs one, tell them explicitly.
+  if (
+    decision.outcome === 'ALLOW' &&
+    (decision.actionKind === 'casper-deploy' || decision.actionKind === 'evm-transfer') &&
+    decision.status === 'RESERVED' &&
+    !userTxHash
+  ) {
+    return {
+      decision_id: decisionId,
+      status: 'AWAITING_USER_TX',
+      settled: false,
+      anchored: false,
+      tx_hash: null,
+      message: `Broadcast the transaction from your own wallet first, then call casper_guard_reconcile again with tx_hash set to the transaction hash you received.`,
+    };
+  }
+
+  // x402-payment and cspr-trade go through the normal FSM settlement reader path.
   const settlementReader = deps.settlementReaderFactory
     ? composeSettlementReader(
         deps.settlementReaderFactory(),

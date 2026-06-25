@@ -16,7 +16,6 @@ import {
 } from '../lib/casper/settlement-reader.js';
 import {
   createLiveCasperDeploySubmitter,
-  createNativeCsprTransferSubmitter,
   createOdraGuardRegistryAnchorer,
 } from '../lib/casper/odra-anchorer.js';
 import {
@@ -26,7 +25,6 @@ import {
 } from '../lib/casper/cspr-trade.js';
 import type { CasperGuardSigner } from '../engines/casper-guard/policy.js';
 import type { CasperGuardIntent, CasperGuardNetwork } from '../engines/casper-guard/types.js';
-import { createNativeEvmTransferSubmitter } from '../lib/evm/evm-submitter.js';
 
 export interface CasperClientSignerProvider {
   mode: CasperSignerMode;
@@ -89,42 +87,6 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
           })
         : new UnavailableCsprTradeClient(),
     }),
-    ...(env.CASPER_GUARD_SIGNER_PEM_PATH !== '' && env.CASPER_GUARD_FACILITATOR_RPC_URL !== ''
-      ? {
-          nativeTransferSubmitter: createNativeCsprTransferSubmitter({
-            rpcUrl: env.CASPER_GUARD_FACILITATOR_RPC_URL,
-            pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH,
-            algorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
-            chainName: 'casper-test',
-          }),
-        }
-      : {}),
-    // EVM networks: policy enforcement always on Casper; actual tx on Sepolia / Base Sepolia.
-    // Submitters are only wired when a private key AND the network's RPC URL are set.
-    ...(env.EVM_PRIVATE_KEY !== ''
-      ? {
-          evmTransferSubmitters: {
-            ...(env.EVM_SEPOLIA_RPC_URL !== ''
-              ? {
-                  'evm:sepolia': createNativeEvmTransferSubmitter({
-                    network: 'evm:sepolia',
-                    privateKey: env.EVM_PRIVATE_KEY as `0x${string}`,
-                    rpcUrl: env.EVM_SEPOLIA_RPC_URL,
-                  }),
-                }
-              : {}),
-            ...(env.EVM_BASE_SEPOLIA_RPC_URL !== ''
-              ? {
-                  'evm:base-sepolia': createNativeEvmTransferSubmitter({
-                    network: 'evm:base-sepolia',
-                    privateKey: env.EVM_PRIVATE_KEY as `0x${string}`,
-                    rpcUrl: env.EVM_BASE_SEPOLIA_RPC_URL,
-                  }),
-                }
-              : {}),
-          },
-        }
-      : {}),
   };
 }
 

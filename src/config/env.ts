@@ -67,11 +67,6 @@ const EnvSchema = z.object({
   CSPR_TRADE_MAX_SLIPPAGE_BPS: z.coerce.number().int().min(0).max(10_000).default(100),
   CSPR_TRADE_ALLOWED_RISK_LABELS: z.string().min(1).default('low,medium'),
 
-  // EVM networks (Sepolia + Base Sepolia). Policy enforcement stays on Casper; actual tx on EVM.
-  // Leave empty to disable EVM settlement (policy checks + authorize still work without it).
-  EVM_PRIVATE_KEY: z.string().regex(/^0x[0-9a-fA-F]{64}$/).or(z.literal('')).default(''),
-  EVM_SEPOLIA_RPC_URL: z.string().url().or(z.literal('')).default(''),
-  EVM_BASE_SEPOLIA_RPC_URL: z.string().url().or(z.literal('')).default(''),
 
   // Hot-path signer keys. DEFAULTS ARE WELL-KNOWN PUBLIC ANVIL TEST KEYS — NOT SECRETS, demo/dev only.
   // Production overrides with KMS-isolated keys behind the same LocalKmsSigner seam.

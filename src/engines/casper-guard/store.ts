@@ -201,6 +201,35 @@ export async function markCasperGuardDecisionSettled(
   return result.rowCount === 1;
 }
 
+/**
+ * Settle a decision that is still RESERVED because the user broadcast the tx themselves.
+ * The normal FSM path (SIGNED → BROADCASTING → EXPIRY_CHECK → SETTLED) is bypassed —
+ * the user provided the tx_hash directly so we go straight to SETTLED.
+ */
+export async function markDecisionSettledByUser(
+  pool: pg.Pool,
+  input: { decisionId: string; txHash: string },
+): Promise<boolean> {
+  const result = await pool.query(
+    `UPDATE casper_guard_decisions
+        SET status = 'SETTLED',
+            tx_hash = $2,
+            deploy_hash = $2,
+            updated_at = now()
+      WHERE decision_id = $1
+        AND status = 'RESERVED'
+        AND outcome = 'ALLOW'
+        AND EXISTS (
+          SELECT 1
+            FROM casper_guard_holds
+           WHERE decision_id = $1
+             AND status = 'RESERVED'
+        )`,
+    [input.decisionId, input.txHash],
+  );
+  return result.rowCount === 1;
+}
+
 export async function settleCasperGuardHold(pool: pg.Pool, decisionId: string): Promise<boolean> {
   const result = await pool.query<{ hold_id: string }>(
     `UPDATE casper_guard_holds

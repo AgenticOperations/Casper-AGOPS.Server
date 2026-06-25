@@ -25,8 +25,6 @@ import {
   type GuardRegistryAnchorer,
 } from './reconcile-worker.js';
 import { readCasperGuardDecision, type CasperGuardDecisionRecord } from './store.js';
-import type { NativeCsprTransferSubmitter } from '../../lib/casper/odra-anchorer.js';
-import type { NativeEvmTransferSubmitter } from '../../lib/evm/evm-submitter.js';
 import {
   normalizeCasperGuardIntent,
   type CasperGuardActionKind,
@@ -55,9 +53,6 @@ export interface CasperGuardDeps {
   tradeExecutor?: {
     execute(input: { intent: { pair: string; amount: string } }): Promise<unknown>;
   };
-  nativeTransferSubmitter?: NativeCsprTransferSubmitter;
-  /** Per-network EVM submitters. Key is the CasperGuardNetwork string (e.g. "evm:sepolia"). */
-  evmTransferSubmitters?: Partial<Record<CasperGuardNetwork, NativeEvmTransferSubmitter>>;
 }
 
 const positiveIntegerString = z.string().regex(/^[1-9][0-9]*$/);
