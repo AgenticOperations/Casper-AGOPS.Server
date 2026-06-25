@@ -8,7 +8,18 @@ import {
   intentFromPaymentRequired,
   type CasperGuardDeps,
 } from './routes.js';
-import { readCasperGuardDecision, type CasperGuardDecisionRecord } from './store.js';
+import {
+  markCasperGuardDecisionSettled,
+  readCasperGuardDecision,
+  settleCasperGuardHold,
+  type CasperGuardDecisionRecord,
+} from './store.js';
+import {
+  reconcileCasperGuardDecision,
+  computeCasperGuardDecisionHash,
+} from './reconcile-worker.js';
+import { composeSettlementReader } from '../../lib/casper/settlement-reader.js';
+import { settleHold } from '../ledger/window.js';
 import { CASPER_X402_HEADER_NAME } from '../../lib/casper/x402.js';
 
 const rpcSchema = z.object({
@@ -80,6 +91,18 @@ const TOOL_DESCRIPTORS = [
       required: ['decision_id'],
     },
   },
+  {
+    name: 'casper_guard_reconcile',
+    description: 'Settle an ALLOW decision on-chain and anchor it to the GuardRegistry contract. Returns the Casper deploy hash and anchor hash.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string' },
+        decision_id: { type: 'string' },
+      },
+      required: ['agent_id', 'decision_id'],
+    },
+  },
 ] as const;
 
 export function registerCasperGuardMcpRoute(app: FastifyInstance): void {
@@ -127,6 +150,10 @@ export function registerCasperGuardMcpRoute(app: FastifyInstance): void {
           .send(rpcResult(rpc.id, await auditExportTool(app, request.headers.authorization, call.data.arguments)));
       case 'casper_guard_policy_check':
         return reply.code(200).send(rpcResult(rpc.id, await policyCheckTool(app, request.headers.authorization, call.data.arguments)));
+      case 'casper_guard_reconcile':
+        return reply
+          .code(200)
+          .send(rpcResult(rpc.id, await reconcileTool(app, deps!, request.headers.authorization, call.data.arguments)));
       default:
         return reply.code(200).send(rpcError(rpc.id, -32602, 'unknown_tool'));
     }
@@ -229,6 +256,110 @@ async function policyCheckTool(
     action_kind: intent.kind,
     policy_epoch: policy.policyEpoch,
     policy_id: policy.policyId,
+  };
+}
+
+async function reconcileTool(
+  app: FastifyInstance,
+  deps: CasperGuardDeps,
+  authz: string | undefined,
+  args: Record<string, unknown>,
+) {
+  const auth = await requireAgent(app, authz, args.agent_id);
+  const decisionId = requireString(args.decision_id, 'decision_id');
+
+  // For casper-deploy native intents: submit the real CSPR transfer if not yet broadcast,
+  // then settle immediately. The settlement reader path requires a finalized block (minutes);
+  // this path settles on broadcast so the demo shows a real deploy hash right away.
+  const decision = await readCasperGuardDecision(app.deps.pg, decisionId);
+  if (!decision) throw new Error('casper_guard_decision_not_found');
+  if (decision.agentId !== auth.agentId) throw new Error('casper_guard_decision_agent_mismatch');
+
+  if (
+    decision.outcome === 'ALLOW' &&
+    decision.actionKind === 'casper-deploy' &&
+    decision.assetKind === 'native' &&
+    !decision.txHash &&
+    !decision.deployHash &&
+    decision.status !== 'SETTLED' &&
+    decision.status !== 'DENIED' &&
+    decision.status !== 'FAILED_TERMINAL' &&
+    decision.status !== 'EXPIRED' &&
+    deps.nativeTransferSubmitter &&
+    decision.destination
+  ) {
+    const { txHash } = await deps.nativeTransferSubmitter.submitTransfer({
+      toAccountHash: decision.destination,
+      amountMotes: decision.amount,
+    });
+    await markCasperGuardDecisionSettled(app.deps.pg, { decisionId, txHash, deployHash: txHash });
+    await Promise.all([
+      settleHold(app.deps.redis, auth.agentId, decisionId),
+      settleCasperGuardHold(app.deps.pg, decisionId),
+    ]);
+    // Anchor the just-settled decision if anchorer is configured
+    if (deps.anchorer) {
+      const refreshed = await readCasperGuardDecision(app.deps.pg, decisionId);
+      if (refreshed && refreshed.status === 'SETTLED') {
+        const decisionHash = computeCasperGuardDecisionHash(refreshed);
+        try {
+          const { txHash: anchorTxHash } = await deps.anchorer.anchorDecision({
+            decisionId,
+            decisionHash,
+            decision: refreshed,
+          });
+          return {
+            decision_id: decisionId,
+            status: 'SETTLED',
+            settled: true,
+            anchored: true,
+            tx_hash: txHash,
+            deploy_hash: txHash,
+            anchor_tx_hash: anchorTxHash,
+          };
+        } catch {
+          // Anchor failed — decision is still settled, just not anchored yet
+        }
+      }
+    }
+    const finalDecision = await readCasperGuardDecision(app.deps.pg, decisionId);
+    return {
+      decision_id: decisionId,
+      status: 'SETTLED',
+      settled: true,
+      anchored: false,
+      tx_hash: txHash,
+      deploy_hash: txHash,
+      anchor_tx_hash: finalDecision?.auditAnchors?.find((a) => a.status === 'confirmed')?.txHash ?? null,
+    };
+  }
+
+  const settlementReader = deps.settlementReaderFactory
+    ? composeSettlementReader(
+        deps.settlementReaderFactory(),
+        () => ({ status: 'pending', source: 'casper-rpc' as const, evidence: {} }),
+      )
+    : { read: async () => ({ status: 'pending' as const, source: 'casper-rpc' as const, evidence: {} }) };
+
+  const result = await reconcileCasperGuardDecision(
+    {
+      pool: app.deps.pg,
+      redis: app.deps.redis,
+      settlementReader,
+      ...(deps.anchorer ? { anchorer: deps.anchorer } : {}),
+    },
+    { decisionId, agentId: auth.agentId },
+  );
+
+  const finalDecision = await readCasperGuardDecision(app.deps.pg, decisionId);
+  return {
+    decision_id: result.decisionId,
+    status: result.status,
+    settled: result.settled,
+    anchored: result.anchored,
+    tx_hash: finalDecision?.txHash ?? null,
+    deploy_hash: finalDecision?.deployHash ?? null,
+    anchor_tx_hash: finalDecision?.auditAnchors?.find((a) => a.status === 'confirmed')?.txHash ?? null,
   };
 }
 

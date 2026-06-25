@@ -2,10 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { issueAdminKey, newApiKeyId, newMembershipId, newOrgId } from '../../../lib/ids.js';
 import { resolveSessionUserId } from '../account/session-store.js';
-import {
-  seedDefaultOrgPolicies,
-  deriveAgentFloatAddress,
-} from '../../control/default-policies.js';
+import { authForRoute } from '../access/route-guard.js';
+import { seedDefaultOrgPolicies } from '../../control/default-policies.js';
 
 /**
  * Org creation — the one place a human bootstraps a tenant. The caller authenticates with a SESSION
@@ -74,13 +72,37 @@ export function registerOrgRoutes(app: FastifyInstance): void {
 
     // Working default policy baseline (post-commit; needs the org row visible). Without it every
     // downstream policy/provision/authorize for this org's agents fails closed at the compiler.
+    // Use Casper operator account hash as the float destination fence. Falls back to the legacy EVM
+    // agent-float address if the Casper hash is not configured, so the Arc rail still works.
+    const floatDestination =
+      env.CASPER_OPERATOR_ACCOUNT_HASH !== ''
+        ? env.CASPER_OPERATOR_ACCOUNT_HASH
+        : env.AGENT_FLOAT_PRIVATE_KEY;
     await seedDefaultOrgPolicies(pool, redis, {
       orgId,
-      agentFloatAddress: deriveAgentFloatAddress(env.AGENT_FLOAT_PRIVATE_KEY),
+      operatorAccountHash: floatDestination,
     });
 
     return reply
       .code(201)
       .send({ org: { id: orgId, name: parsed.data.name }, role: 'owner', api_key: adminKey.token });
+  });
+
+  // Reseed the org's default policies with the current env values (Casper mote units + operator
+  // account hash). Needed when an org was created before the Casper migration. Admin+ only.
+  app.post('/v1/orgs/reseed-policies', async (request, reply) => {
+    const { pg: pool, env, redis } = app.deps;
+    const auth = await authForRoute(app, request, 'admin');
+    if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
+
+    const floatDestination =
+      env.CASPER_OPERATOR_ACCOUNT_HASH !== ''
+        ? env.CASPER_OPERATOR_ACCOUNT_HASH
+        : env.AGENT_FLOAT_PRIVATE_KEY;
+    await seedDefaultOrgPolicies(pool, redis, {
+      orgId: auth.principal.orgId,
+      operatorAccountHash: floatDestination,
+    });
+    return reply.code(200).send({ reseeded: true, destination: floatDestination });
   });
 }

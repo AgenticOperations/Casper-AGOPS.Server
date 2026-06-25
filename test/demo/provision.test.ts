@@ -12,10 +12,10 @@ describe('demo provision (Docker-gated)', () => {
   it('bootstraps the operator org from an unseen sk_ and registers a $10-cap agent', async (ctx) => {
     if (!stores) return ctx.skip();
     const sk = issueAdminKey().token; // an sk_ that resolves to no org yet
-    const out = await setupDemoAgent(stores.pool, stores.redis, { adminKey: sk, capUsdc: 10 });
+    const out = await setupDemoAgent(stores.pool, stores.redis, { adminKey: sk, capCspr: 10});
     expect(out.agent_id).toMatch(/^agt_/);
     expect(out.agent_key).toMatch(/^ag_live_/);
-    expect(out.spend_cap).toBe('10000000'); // $10 in base units
+    expect(out.spend_cap).toBe('10000000000'); // 10 CSPR in motes
     // the same sk now authenticates to the bootstrapped org
     const admin = await authenticateAdmin(stores.pool, `Bearer ${sk}`);
     expect(admin.ok).toBe(true);
@@ -25,8 +25,8 @@ describe('demo provision (Docker-gated)', () => {
   it('is idempotent on the org: a second setup with the same sk_ reuses the org, new agent', async (ctx) => {
     if (!stores) return ctx.skip();
     const sk = issueAdminKey().token;
-    const a = await setupDemoAgent(stores.pool, stores.redis, { adminKey: sk, capUsdc: 10 });
-    const b = await setupDemoAgent(stores.pool, stores.redis, { adminKey: sk, capUsdc: 10 });
+    const a = await setupDemoAgent(stores.pool, stores.redis, { adminKey: sk, capCspr: 10});
+    const b = await setupDemoAgent(stores.pool, stores.redis, { adminKey: sk, capCspr: 10});
     expect(b.org_id).toBe(a.org_id);
     expect(b.agent_id).not.toBe(a.agent_id);
   });
@@ -34,7 +34,7 @@ describe('demo provision (Docker-gated)', () => {
   it('resetDemo suspends demo agents and lifts deny_all', async (ctx) => {
     if (!stores) return ctx.skip();
     const sk = issueAdminKey().token;
-    const out = await setupDemoAgent(stores.pool, stores.redis, { adminKey: sk, capUsdc: 10 });
+    const out = await setupDemoAgent(stores.pool, stores.redis, { adminKey: sk, capCspr: 10});
     await stores.redis.set(`org:${out.org_id}:deny_all`, '1');
     await resetDemo(stores.pool, stores.redis, { orgId: out.org_id });
     expect(await stores.redis.exists(`org:${out.org_id}:deny_all`)).toBe(0);

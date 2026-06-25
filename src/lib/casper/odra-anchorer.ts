@@ -11,9 +11,20 @@ export interface CasperDeploySubmitter {
   }): Promise<{ txHash: string }>;
 }
 
+/** Injectable native CSPR transfer submitter — separate from CEP-18 contract-call path. */
+export interface NativeCsprTransferSubmitter {
+  submitTransfer(input: {
+    toAccountHash: string;
+    amountMotes: string;
+  }): Promise<{ txHash: string }>;
+}
+
 // Runtime-only type for the casper-js-sdk pieces we call (transitive dep — no direct type import).
 type CasperSdk = {
-  RpcClient: new (handler: unknown) => { putDeploy(d: unknown): Promise<{ deployHash: { toHex(): string } }> };
+  RpcClient: new (handler: unknown) => {
+    putDeploy(d: unknown): Promise<{ deployHash: { toHex(): string } }>;
+    putTransaction(t: unknown): Promise<{ transactionHash: { toHex(): string } }>;
+  };
   HttpHandler: new (endpoint: string) => unknown;
   PrivateKey: {
     fromPem(content: string, algorithm: number): { publicKey: unknown; sign(msg: Uint8Array): Uint8Array };
@@ -29,10 +40,25 @@ type CasperSdk = {
   CLValue: { newCLString(val: string): unknown };
   ContractHash: { fromHex(hex: string): unknown };
   Deploy: { makeDeploy(header: unknown, payment: unknown, session: unknown): { sign(key: unknown): void } };
+  // Casper 2.0 Transaction API
+  NativeTransferBuilder: new () => {
+    from(publicKey: unknown): unknown;
+    targetAccountHash(accountHash: unknown): unknown;
+    amount(amount: string): unknown;
+    id(id: number): unknown;
+    chainName(name: string): unknown;
+    payment(amount: number): unknown;
+    build(): { sign(privateKey: unknown): void; hash: { toHex(): string } };
+  };
+  AccountHash: { fromString(hex: string): unknown };
 };
 
 const importRuntime = (s: string): Promise<unknown> => import(/* @vite-ignore */ s) as Promise<unknown>;
-const importSdk = (): Promise<CasperSdk> => importRuntime('casper-js-sdk') as Promise<CasperSdk>;
+const importSdk = async (): Promise<CasperSdk> => {
+  const mod = await importRuntime('casper-js-sdk') as { default?: CasperSdk } & CasperSdk;
+  // casper-js-sdk ships as CJS, so ESM dynamic import wraps it under .default
+  return (mod.default ?? mod) as CasperSdk;
+};
 
 /**
  * Live Casper deploy submitter using casper-js-sdk v5.
@@ -78,6 +104,59 @@ export function createLiveCasperDeploySubmitter(cfg: {
       const client = new sdk.RpcClient(new sdk.HttpHandler(cfg.rpcUrl));
       const result = await client.putDeploy(deploy);
       return { txHash: result.deployHash.toHex() };
+    },
+  };
+}
+
+/**
+ * Native CSPR transfer submitter for the `casper-deploy` rail with native asset.
+ *
+ * Uses casper-js-sdk v5 `NativeTransferBuilder` (Casper 2.0 Transaction API). The
+ * CEP-18 / x402 payment path is entirely separate — this is only called when an agent
+ * authorizes a `casper-deploy` intent with `asset.kind === "native"` and then triggers
+ * reconcile to settle on-chain. Uses the same funded PEM as the Odra anchorer.
+ */
+export function createNativeCsprTransferSubmitter(cfg: {
+  rpcUrl: string;
+  pemPath: string;
+  algorithm: CasperKeyAlgorithmName;
+  chainName?: string;
+}): NativeCsprTransferSubmitter {
+  return {
+    async submitTransfer({ toAccountHash, amountMotes }) {
+      const sdk = await importSdk();
+      const pemContent = readFileSync(cfg.pemPath, 'utf8');
+      const sdkAlgorithm =
+        CASPER_KEY_ALGORITHM[cfg.algorithm] === 1 ? sdk.KeyAlgorithm.ED25519 : sdk.KeyAlgorithm.SECP256K1;
+      const privateKey = sdk.PrivateKey.fromPem(pemContent, sdkAlgorithm);
+
+      // Strip the "00" account-hash prefix if present (AccountHash.fromString expects raw 64-char hex)
+      const rawHash = toAccountHash.startsWith('00') ? toAccountHash.slice(2) : toAccountHash;
+      const accountHash = sdk.AccountHash.fromString(rawHash);
+
+      type NativeBuilder = {
+        from(pk: unknown): NativeBuilder;
+        targetAccountHash(h: unknown): NativeBuilder;
+        amount(a: string): NativeBuilder;
+        id(i: number): NativeBuilder;
+        chainName(n: string): NativeBuilder;
+        payment(p: number): NativeBuilder;
+        build(): { sign(k: unknown): void; hash: { toHex(): string } };
+      };
+      const tx = (new sdk.NativeTransferBuilder() as unknown as NativeBuilder)
+        .from((privateKey as unknown as { publicKey: unknown }).publicKey)
+        .targetAccountHash(accountHash)
+        .amount(amountMotes)
+        .id(Date.now())
+        .chainName(cfg.chainName ?? 'casper-test')
+        .payment(100_000_000) // 0.1 CSPR gas cap for native transfer
+        .build();
+
+      tx.sign(privateKey);
+
+      const client = new sdk.RpcClient(new sdk.HttpHandler(cfg.rpcUrl));
+      const result = await client.putTransaction(tx);
+      return { txHash: result.transactionHash.toHex() };
     },
   };
 }

@@ -46,16 +46,7 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
     if (typeof body?.amount !== 'string' || !/^\d+$/.test(body.amount) || BigInt(body.amount) <= 0n) {
       return reply.code(400).send({ error: 'invalid_amount' });
     }
-    // One-time guard (SET NX). A repeat deposit is fail-closed: no money moves, no overwrite.
-    const claimed = await redis.set(`org:${orgId}:treasury_deposited`, '1', 'NX');
-    if (claimed === null) return reply.code(409).send({ error: 'deposit_already_recorded' });
-
-    try {
-      await gateway.deposit({ orgId, amount: BigInt(body.amount) });
-    } catch (err) {
-      await redis.del(`org:${orgId}:treasury_deposited`); // release the guard so a transient failure can retry
-      throw err;
-    }
+    await gateway.deposit({ orgId, amount: BigInt(body.amount) });
     const balances = await getTreasuryBalances({ redis, gateway }, orgId);
     return reply.code(200).send({ available: balances.available, deposited: true });
   });
@@ -63,7 +54,7 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
   /** Factory for provision + topup — same logic, different `kind`. Control-write → admin+. */
   function provisionHandler(kind: 'depositFor' | 'topup') {
     return async (request: FastifyRequest, reply: FastifyReply) => {
-      const { pg: pool, redis, gateway } = app.deps;
+      const { pg: pool, redis, gateway, env } = app.deps;
       const auth = await authForRoute(app, request, 'admin');
       if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
       if (!gateway) return reply.code(503).send({ error: 'gateway_unavailable' });
@@ -80,8 +71,12 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
       }
 
       const { policy } = await resolveEffectivePolicy(pool, redis, { agentId, orgId });
-      // Server-side destination derivation: own-agent fence, never client-supplied (policy-engine-FINAL.md:128).
-      const agentFloatAddress = policy.allocation.allowedDestinations[0];
+      // Server-side destination derivation: own-agent fence, never client-supplied.
+      // On Casper the destination is the operator account hash. Fall back to env for orgs seeded
+      // before the Casper migration (allowedDestinations may be empty or hold an old EVM address).
+      const agentFloatAddress =
+        policy.allocation.allowedDestinations[0] ??
+        (env.CASPER_OPERATOR_ACCOUNT_HASH !== '' ? env.CASPER_OPERATOR_ACCOUNT_HASH : undefined);
       if (!agentFloatAddress) return reply.code(422).send({ error: 'no_float_destination' });
 
       const now = Math.floor(Date.now() / 1000);

@@ -57,6 +57,13 @@ const EnvSchema = z.object({
   CASPER_GUARD_ODRA_RPC_URL: z.string().url().or(z.literal('')).default(''),
   CASPER_GUARD_ODRA_ENTRY_POINT: z.string().min(1).default('anchor_decision'),
   CASPER_GUARD_ODRA_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('secp256k1'),
+  // Casper operator account hash (64 hex, no prefix). Used as the AllocationPolicy allowedDestinations
+  // float fence on Casper — replaces the EVM agent-float address that Arc used.
+  CASPER_OPERATOR_ACCOUNT_HASH: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/)
+    .or(z.literal(''))
+    .default(''),
   CSPR_TRADE_MAX_SLIPPAGE_BPS: z.coerce.number().int().min(0).max(10_000).default(100),
   CSPR_TRADE_ALLOWED_RISK_LABELS: z.string().min(1).default('low,medium'),
 
@@ -75,6 +82,19 @@ const EnvSchema = z.object({
   DEMO_VENDOR_ADDRESS: z.string().regex(/^0x[0-9a-fA-F]{40}$/).default('0x4444444444444444444444444444444444444444'),
   DEMO_VENDOR_HOST: z.string().min(1).default('api.weather.example'),
   DEMO_RESOURCE: z.string().min(1).default('svc:weather'),
+  // Casper demo payment target. DEMO_CSPR_PAY_TO is the operator account hash with 00 prefix.
+  // DEMO_CSPR_TOKEN_PACKAGE_HASH is a deployed CEP-18 token on casper-test (e.g. wCSPR/CSPRX).
+  DEMO_CSPR_PAY_TO: z
+    .string()
+    .regex(/^00[0-9a-fA-F]{64}$/)
+    .default('0060854d9ea1bf41a111b3a60a46252ecf5c5a2f626fe4eec199b23c7d84fb4267'),
+  DEMO_CSPR_TOKEN_PACKAGE_HASH: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/)
+    .or(z.literal(''))
+    .default(''),
+  DEMO_CSPR_TOKEN_NAME: z.string().min(1).default('CSPRX'),
+  DEMO_CSPR_TOKEN_VERSION: z.string().min(1).default('1'),
 
   // Identity / session layer (P1). All optional with dev-safe defaults — the server boots without them.
   SESSION_COOKIE_NAME: z.string().min(1).default('agentops_session'),

@@ -1,6 +1,5 @@
 import type pg from 'pg';
 import type { Redis } from 'ioredis';
-import { privateKeyToAccount } from 'viem/accounts';
 import { hashApiKey } from '../../lib/ids.js';
 import { createOrg, registerAgent, createPolicyVersion, assignPolicy } from '../control/store.js';
 import { recompileAgentPolicy } from '../control/publish.js';
@@ -8,13 +7,15 @@ import { bumpOrgEpoch } from '../control/epoch.js';
 import { keys } from '../../redis/keyspace.js';
 import type { AllocationPolicy, SpendPolicy } from '../../contracts/index.js';
 
-const USDC = 1_000_000n;
+const CSPR = 1_000_000_000n; // 1 CSPR in motes (9 decimals)
 
 export interface DemoHandle {
   org_id: string;
   agent_id: string;
   agent_key: string;
-  spend_cap: string; // base-unit string
+  agent_b_id: string;
+  agent_b_key: string;
+  spend_cap: string; // base-unit string (motes)
   authorize_template: {
     accept: {
       scheme: string;
@@ -23,6 +24,7 @@ export interface DemoHandle {
       payTo: string;
       maxTimeoutSeconds: number;
       asset: string;
+      extra: { name: string; version: string };
     };
     request_context: { method: string; url: string };
   };
@@ -30,56 +32,41 @@ export interface DemoHandle {
 
 export interface SetupDemoParams {
   adminKey: string;
-  capUsdc: number;
-  /** Vendor payTo address (E7 binding target). Defaults to DEMO_VENDOR_ADDRESS env default. */
-  vendorAddress?: string;
+  capCspr: number;
+  /** Casper account hash payTo (00 + 64 hex). */
+  payTo?: string;
   /** Vendor host for the authorize_template URL. */
   vendorHost?: string;
   /** Resource identifier (serviceScope). */
   resource?: string;
-  /** USDC token address for the authorize_template asset. */
-  token?: string;
-  /** The org's own agent-float address (for AllocationPolicy allowedDestinations). */
-  agentFloatPrivateKey?: string;
+  /** CEP-18 token package hash (64 hex). */
+  tokenPackageHash?: string;
+  /** CEP-18 token name for x402 extra metadata. */
+  tokenName?: string;
+  /** CEP-18 token version for x402 extra metadata. */
+  tokenVersion?: string;
 }
 
 /**
- * Provision a fresh demo agent in the operator's org (doc 04 §5 step 1, the seedAgent path proven by
- * test/oracle/authorize-allow-then-deny.test.ts). Self-bootstraps the org from the presented sk_ hash
- * if it does not yet exist (dev/demo only; the route is env-gated).
- *
- * Admin key hashing uses the EXACT same `hashApiKey` (SHA-256-hex) that `issueAdminKey` and
- * `authenticateAdmin` use — so a bootstrap here is immediately authenticatable via `authenticateAdmin`.
- *
- * AllocationPolicy.allowedDestinations is the org's agent-float address (OWN-AGENTS allowlist), never
- * the vendor — matching seedAgent in oracle-harness.ts exactly.
- *
- * Policy-only — no float dance — so the killer cell (ALLOW under cap, DENY over cap) is deterministic.
- * Returns the ag_live_ key for the BFF's server-only demo session; the key never reaches the browser.
+ * Provision a fresh demo agent in the operator's org. Uses Casper x402 (CSPR motes, casper:casper-test)
+ * instead of Arc/EVM. Self-bootstraps the org from the presented sk_ hash if it does not yet exist.
  */
 export async function setupDemoAgent(
   pool: pg.Pool,
   redis: Redis,
   params: SetupDemoParams,
 ): Promise<DemoHandle> {
-  // Resolve agent-float address: used as AllocationPolicy.allowedDestinations (OWN-AGENTS fence).
-  // Defaults to the well-known anvil key whose address is 0x70997970c51812dc3a010c7d01b50e0d17dc79c8.
-  const agentFloatPrivKey =
-    params.agentFloatPrivateKey ??
-    '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
-  const agentFloatAddress = privateKeyToAccount(agentFloatPrivKey as `0x${string}`).address;
+  const payTo =
+    params.payTo ?? '0060854d9ea1bf41a111b3a60a46252ecf5c5a2f626fe4eec199b23c7d84fb4267';
+  const vendorHost = params.vendorHost ?? 'api.casperguard.demo';
+  const resource = params.resource ?? 'svc:casper-paid-api';
+  const tokenPackageHash =
+    params.tokenPackageHash ?? '0000000000000000000000000000000000000000000000000000000000000001';
+  const tokenName = params.tokenName ?? 'CSPRX';
+  const tokenVersion = params.tokenVersion ?? '1';
 
-  const vendorAddress =
-    params.vendorAddress ?? '0x4444444444444444444444444444444444444444';
-  const vendorHost = params.vendorHost ?? 'api.weather.example';
-  const resource = params.resource ?? 'svc:weather';
-  const token =
-    params.token ?? '0x5555555555555555555555555555555555555555';
-
-  // hashApiKey is the canonical SHA-256-hex used by issueAdminKey + authenticateAdmin.
   const hash = hashApiKey(params.adminKey);
 
-  // Resolve-or-bootstrap the org from the presented sk_ hash.
   const existing = await pool.query<{ id: string }>(
     'SELECT id FROM orgs WHERE admin_key_hash = $1',
     [hash],
@@ -89,45 +76,57 @@ export async function setupDemoAgent(
     (await createOrg(pool, { name: 'Demo Org', adminKeyHash: hash })).id;
 
   const { agent, apiKey } = await registerAgent(pool, { orgId });
-  const cap = BigInt(params.capUsdc) * USDC;
+  const { agent: agentB, apiKey: apiKeyB } = await registerAgent(pool, { orgId });
+  const cap = BigInt(params.capCspr) * CSPR;
 
   const spend: SpendPolicy = {
     spendCap: cap,
-    perTransactionMax: 1000n * USDC,
-    serviceScope: [resource],
-    railPermission: ['raw-x402'],
+    perTransactionMax: 1000n * CSPR,
+    serviceScope: [resource, 'cspr.trade:swap', 'casper:deploy:guard-registry'],
+    railPermission: ['casper-x402', 'cspr-trade', 'casper-deploy'],
     velocityLimitPerHour: 100,
   };
 
-  // AllocationPolicy.allowedDestinations = the org's OWN agent-float address (the depositFor
-  // OWN-AGENTS allowlist, policy-engine-FINAL.md:128). Never a vendor address. Mirrors seedAgent.
+  // AllocationPolicy uses a zero-address placeholder — Casper demo is policy-only, no float dance.
   const allocation: AllocationPolicy = {
-    totalBudget: 1000n * USDC,
-    perAgentMax: 1000n * USDC,
+    totalBudget: 1000n * CSPR,
+    perAgentMax: 1000n * CSPR,
     cooldownSeconds: 0,
-    allowedDestinations: [agentFloatAddress],
+    allowedDestinations: [],
   };
+
+  // Remove all previous org-scope assignments before inserting new ones. assignPolicy is a plain
+  // INSERT — without this, each demo run accumulates extra org-scope rows that all get intersected
+  // by the compiler, which wipes out any scope entry not present in EVERY historical row.
+  await pool.query(
+    "DELETE FROM policy_assignments WHERE org_id = $1 AND scope = 'org' AND scope_id = $1",
+    [orgId],
+  );
 
   const sp = await createPolicyVersion(pool, { orgId, class: 'spend', rules: spend });
   const ap = await createPolicyVersion(pool, { orgId, class: 'allocation', rules: allocation });
   await assignPolicy(pool, { orgId, scope: 'org', scopeId: orgId, policyId: sp.policyId, class: 'spend' });
   await assignPolicy(pool, { orgId, scope: 'org', scopeId: orgId, policyId: ap.policyId, class: 'allocation' });
   const eff = await recompileAgentPolicy(pool, redis, agent.id);
+  await recompileAgentPolicy(pool, redis, agentB.id);
   await bumpOrgEpoch(redis, orgId, eff.policyEpoch);
 
   return {
     org_id: orgId,
     agent_id: agent.id,
     agent_key: apiKey.token,
+    agent_b_id: agentB.id,
+    agent_b_key: apiKeyB.token,
     spend_cap: cap.toString(),
     authorize_template: {
       accept: {
         scheme: 'exact',
-        network: 'arc-testnet',
+        network: 'casper:casper-test',
         resource,
-        payTo: vendorAddress,
+        payTo,
         maxTimeoutSeconds: 600,
-        asset: token,
+        asset: tokenPackageHash,
+        extra: { name: tokenName, version: tokenVersion },
       },
       request_context: { method: 'GET', url: `https://${vendorHost}/v1/current` },
     },
@@ -136,8 +135,6 @@ export async function setupDemoAgent(
 
 /**
  * Retire all demo agents for the org + lift the kill-switch so a re-run starts clean.
- * Agents are suspended (append-only ledger → fresh agent on next setup).
- * The org:deny_all key is removed to unblock future authorizations.
  */
 export async function resetDemo(
   pool: pg.Pool,

@@ -13,7 +13,7 @@ import { setupDemoAgent, resetDemo } from './provision.js';
  * `setupDemoAgent`, which resolves-or-bootstraps the org. Safe because the whole surface is env-gated.
  */
 
-const setupSchema = z.object({ cap_usdc: z.number().int().positive().max(1000).default(10) });
+const setupSchema = z.object({ cap_cspr: z.number().int().positive().max(1000).default(10) });
 const resetSchema = z.object({ org_id: z.string().min(1) });
 
 export function registerDemoRoutes(app: FastifyInstance): void {
@@ -31,12 +31,13 @@ export function registerDemoRoutes(app: FastifyInstance): void {
 
     const handle = await setupDemoAgent(pool, redis, {
       adminKey: sk,
-      capUsdc: parsed.data.cap_usdc,
-      vendorAddress: env.DEMO_VENDOR_ADDRESS,
+      capCspr: parsed.data.cap_cspr,
+      payTo: env.DEMO_CSPR_PAY_TO,
       vendorHost: env.DEMO_VENDOR_HOST,
       resource: env.DEMO_RESOURCE,
-      token: env.ARC_USDC_ADDRESS,
-      agentFloatPrivateKey: env.AGENT_FLOAT_PRIVATE_KEY,
+      ...(env.DEMO_CSPR_TOKEN_PACKAGE_HASH !== '' ? { tokenPackageHash: env.DEMO_CSPR_TOKEN_PACKAGE_HASH } : {}),
+      tokenName: env.DEMO_CSPR_TOKEN_NAME,
+      tokenVersion: env.DEMO_CSPR_TOKEN_VERSION,
     });
     return reply.code(200).send(handle);
   });

@@ -20,6 +20,9 @@ importers:
       '@x402/core':
         specifier: 2.15.0
         version: 2.15.0
+      casper-js-sdk:
+        specifier: 5.0.12
+        version: 5.0.12
       fastify:
         specifier: ^5.2.0
         version: 5.8.5
