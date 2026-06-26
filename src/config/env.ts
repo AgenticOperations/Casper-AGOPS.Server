@@ -66,6 +66,12 @@ const EnvSchema = z.object({
     .default(''),
   CSPR_TRADE_MAX_SLIPPAGE_BPS: z.coerce.number().int().min(0).max(10_000).default(100),
   CSPR_TRADE_ALLOWED_RISK_LABELS: z.string().min(1).default('low,medium'),
+  // Live CSPR.trade MCP integration. Defaults empty (UnavailableCsprTradeClient). Set to
+  // https://mcp.cspr.trade/mcp to enable real DEX quotes + testnet swap execution.
+  CSPR_TRADE_MCP_URL: z.string().url().or(z.literal('')).default(''),
+  // Casper public key (hex, 66 chars with 01/02 prefix) for the sender_public_key field in build_swap.
+  // Typically the same public key as the Guard signer PEM. Required for LiveCsprTradeClient.
+  CASPER_GUARD_SENDER_PUBLIC_KEY: z.string().default(''),
 
 
   // Hot-path signer keys. DEFAULTS ARE WELL-KNOWN PUBLIC ANVIL TEST KEYS — NOT SECRETS, demo/dev only.

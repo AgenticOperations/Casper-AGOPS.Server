@@ -20,8 +20,7 @@ import {
 } from '../lib/casper/odra-anchorer.js';
 import {
   createCsprTradeExecutor,
-  UnavailableCsprTradeClient,
-  TestnetCsprTradeClient,
+  createLiveCsprTradeClient,
 } from '../lib/casper/cspr-trade.js';
 import type { CasperGuardSigner } from '../engines/casper-guard/policy.js';
 import type { CasperGuardIntent, CasperGuardNetwork } from '../engines/casper-guard/types.js';
@@ -73,19 +72,21 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
       maxSlippageBps: env.CSPR_TRADE_MAX_SLIPPAGE_BPS,
       allowedRiskLabels: parseCsv(env.CSPR_TRADE_ALLOWED_RISK_LABELS),
     },
+    // Prefer LiveCsprTradeClient (real mcp.cspr.trade flow: get_quote → build_swap → sign → submit)
+    // when CSPR_TRADE_MCP_URL and CASPER_GUARD_SENDER_PUBLIC_KEY are configured.
+    // Falls back to UnavailableCsprTradeClient when either is absent (honest-blocked, never a fake fill).
     tradeExecutor: createCsprTradeExecutor({
       policy: {
         maxSlippageBps: env.CSPR_TRADE_MAX_SLIPPAGE_BPS,
         allowedRiskLabels: parseCsv(env.CSPR_TRADE_ALLOWED_RISK_LABELS),
       },
-      client: odraConfigured
-        ? new TestnetCsprTradeClient({
-            rpcUrl: env.CASPER_GUARD_ODRA_RPC_URL,
-            pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH,
-            algorithm: env.CASPER_GUARD_ODRA_ALGORITHM,
-            packageHash: env.CASPER_GUARD_ODRA_PACKAGE_HASH,
-          })
-        : new UnavailableCsprTradeClient(),
+      client: createLiveCsprTradeClient({
+        mcpUrl: env.CSPR_TRADE_MCP_URL !== '' ? env.CSPR_TRADE_MCP_URL : undefined,
+        senderPublicKey:
+          env.CASPER_GUARD_SENDER_PUBLIC_KEY !== '' ? env.CASPER_GUARD_SENDER_PUBLIC_KEY : undefined,
+        pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH !== '' ? env.CASPER_GUARD_SIGNER_PEM_PATH : undefined,
+        algorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
+      }),
     }),
   };
 }

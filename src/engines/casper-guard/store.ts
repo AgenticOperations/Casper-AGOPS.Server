@@ -217,7 +217,7 @@ export async function markDecisionSettledByUser(
             deploy_hash = $2,
             updated_at = now()
       WHERE decision_id = $1
-        AND status = 'RESERVED'
+        AND status IN ('RESERVED', 'SIGNED')
         AND outcome = 'ALLOW'
         AND EXISTS (
           SELECT 1

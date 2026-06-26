@@ -115,6 +115,7 @@ describe('Casper Guard MCP route', () => {
       'casper_guard_authorize_action',
       'casper_guard_decision_status',
       'casper_guard_audit_export',
+      'casper_guard_reconcile',
     ]);
     expect(body.result.tools[1]).toMatchObject({
       name: 'casper_guard_authorize_payment',

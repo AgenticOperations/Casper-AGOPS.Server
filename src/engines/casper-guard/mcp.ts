@@ -36,15 +36,115 @@ const callSchema = z.object({
   arguments: z.record(z.unknown()).default({}),
 });
 
+// Shared sub-schemas reused across intent variants.
+const ASSET_SCHEMA = {
+  oneOf: [
+    {
+      type: 'object',
+      description: 'Native CSPR asset',
+      properties: {
+        kind: { type: 'string', enum: ['native'] },
+        symbol: { type: 'string', enum: ['CSPR'] },
+      },
+      required: ['kind', 'symbol'],
+    },
+    {
+      type: 'object',
+      description: 'CEP-18 fungible token (e.g. USDC on Casper)',
+      properties: {
+        kind: { type: 'string', enum: ['cep18'] },
+        package_hash: { type: 'string', pattern: '^[0-9a-fA-F]{64}$', description: '64-char hex contract package hash' },
+        name: { type: 'string', minLength: 1 },
+        version: { type: 'string', minLength: 1 },
+      },
+      required: ['kind', 'package_hash', 'name', 'version'],
+    },
+    {
+      type: 'object',
+      description: 'Native ETH asset (EVM networks)',
+      properties: {
+        kind: { type: 'string', enum: ['native-eth'] },
+        symbol: { type: 'string', enum: ['ETH'] },
+      },
+      required: ['kind', 'symbol'],
+    },
+    {
+      type: 'object',
+      description: 'ERC-20 token (EVM networks)',
+      properties: {
+        kind: { type: 'string', enum: ['erc20'] },
+        address: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$' },
+        name: { type: 'string', minLength: 1 },
+        decimals: { type: 'integer', minimum: 0, maximum: 18 },
+      },
+      required: ['kind', 'address', 'name', 'decimals'],
+    },
+  ],
+} as const;
+
+const INTENT_SCHEMA = {
+  oneOf: [
+    {
+      type: 'object',
+      title: 'casper-deploy',
+      description: 'Native Casper deploy — transfer, contract-call, or contract-install. Use resource_id "casper:deploy:guard-registry".',
+      properties: {
+        kind: { type: 'string', enum: ['casper-deploy'] },
+        network: { type: 'string', enum: ['casper:casper-test'], description: 'Must be "casper:casper-test" — mainnet is not permitted.' },
+        resource_id: { type: 'string', description: 'Must be in the agent\'s service_scope. Use "casper:deploy:guard-registry" for Casper deploys.' },
+        amount: { type: 'string', pattern: '^[1-9][0-9]*$', description: 'Amount in motes (integer string, no decimals).' },
+        asset: { ...ASSET_SCHEMA, description: 'Use {"kind":"native","symbol":"CSPR"} for native CSPR transfers.' },
+        deploy_kind: { type: 'string', enum: ['transfer', 'contract-call', 'contract-install'] },
+        target: { type: 'string', minLength: 1, description: 'Recipient account hash (66-char: "00" + 64-char hex) or contract address.' },
+        entry_point: { type: 'string', description: 'Entry point name for contract-call deploys.' },
+        args_hash: { type: 'string', description: 'SHA-256 hash of the deploy args for audit.' },
+      },
+      required: ['kind', 'network', 'resource_id', 'amount', 'asset', 'deploy_kind', 'target'],
+    },
+    {
+      type: 'object',
+      title: 'cspr-trade',
+      description: 'CSPR.trade DEX swap. Fetch quote/slippage from CSPR.trade first, then submit here. Use resource_id "cspr.trade:swap".',
+      properties: {
+        kind: { type: 'string', enum: ['cspr-trade'] },
+        network: { type: 'string', enum: ['casper:casper-test'], description: 'Must be "casper:casper-test" — mainnet is not permitted.' },
+        resource_id: { type: 'string', description: 'Must be "cspr.trade:swap".' },
+        amount: { type: 'string', pattern: '^[1-9][0-9]*$', description: 'Amount of from_asset in smallest unit (motes for CSPR).' },
+        from_asset: { ...ASSET_SCHEMA, description: 'Asset being sold.' },
+        to_asset: { ...ASSET_SCHEMA, description: 'Asset being bought.' },
+        min_received: { type: 'string', pattern: '^[1-9][0-9]*$', description: 'Minimum to_asset amount to accept (in smallest unit). Prevents slippage above tolerance.' },
+        slippage_bps: { type: 'integer', minimum: 0, maximum: 10000, description: 'Slippage tolerance in basis points (100 = 1%). Must be ≤ policy maxSlippageBps.' },
+        route_id: { type: 'string', minLength: 1, description: 'Route identifier from CSPR.trade get_quote / estimate_slippage response.' },
+        risk_label: { type: 'string', description: 'Risk label from CSPR.trade quote ("low", "medium", "high"). Required for policy trade_risk check.' },
+      },
+      required: ['kind', 'network', 'resource_id', 'amount', 'from_asset', 'to_asset', 'min_received', 'slippage_bps', 'route_id'],
+    },
+    {
+      type: 'object',
+      title: 'evm-transfer',
+      description: 'EVM chain transfer (ETH or ERC-20). Caller broadcasts from their own wallet then reconciles with tx_hash.',
+      properties: {
+        kind: { type: 'string', enum: ['evm-transfer'] },
+        network: { type: 'string', enum: ['evm:sepolia', 'evm:base-sepolia'] },
+        resource_id: { type: 'string', minLength: 1 },
+        amount: { type: 'string', pattern: '^[1-9][0-9]*$' },
+        asset: ASSET_SCHEMA,
+        to: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$', description: 'EVM recipient address.' },
+      },
+      required: ['kind', 'network', 'resource_id', 'amount', 'asset', 'to'],
+    },
+  ],
+} as const;
+
 const TOOL_DESCRIPTORS = [
   {
     name: 'casper_guard_policy_check',
-    description: 'Dry-run a Casper Guard intent against the agent policy without signing.',
+    description: 'Dry-run a Casper Guard intent against the agent policy without signing. Returns allowed_resource_ids and allowed_networks on DENY so the caller can correct the intent.',
     inputSchema: {
       type: 'object',
       properties: {
         agent_id: { type: 'string' },
-        intent: { type: 'object' },
+        intent: INTENT_SCHEMA,
       },
       required: ['agent_id', 'intent'],
     },
@@ -56,7 +156,7 @@ const TOOL_DESCRIPTORS = [
       type: 'object',
       properties: {
         agent_id: { type: 'string' },
-        idempotency_key: { type: 'string' },
+        idempotency_key: { type: 'string', minLength: 8, maxLength: 160 },
         payment_required: { type: 'object' },
       },
       required: ['agent_id', 'idempotency_key', 'payment_required'],
@@ -64,13 +164,20 @@ const TOOL_DESCRIPTORS = [
   },
   {
     name: 'casper_guard_authorize_action',
-    description: 'Authorize a CSPR.trade, direct Casper action, or EVM transfer intent. Policy enforcement always runs on Casper; the actual transaction executes on the network specified in the intent.',
+    description: [
+      'Authorize a CSPR.trade swap, Casper deploy, or EVM transfer intent.',
+      'Policy enforcement always runs on Casper; the transaction itself executes on the network in the intent.',
+      'MAINNET IS BLOCKED — only casper:casper-test, evm:sepolia, and evm:base-sepolia are accepted.',
+      'Field names use snake_case (e.g. deploy_kind, resource_id, from_asset) — camelCase is rejected.',
+      'For casper-deploy: after ALLOW, sign the deploy locally and broadcast it, then call casper_guard_reconcile with the tx_hash.',
+      'For cspr-trade: call casper_guard_reconcile without tx_hash — settlement is read from chain.',
+    ].join(' '),
     inputSchema: {
       type: 'object',
       properties: {
         agent_id: { type: 'string' },
-        idempotency_key: { type: 'string' },
-        intent: { type: 'object' },
+        idempotency_key: { type: 'string', minLength: 8, maxLength: 160 },
+        intent: INTENT_SCHEMA,
       },
       required: ['agent_id', 'idempotency_key', 'intent'],
     },
@@ -95,7 +202,11 @@ const TOOL_DESCRIPTORS = [
   },
   {
     name: 'casper_guard_reconcile',
-    description: 'Record a user-broadcast transaction against an ALLOW decision and anchor the decision proof to the Casper GuardRegistry. For casper-deploy and evm-transfer: broadcast the transaction from the user\'s own wallet first, then call this with tx_hash. For x402-payment and cspr-trade: call without tx_hash — the platform reads settlement from chain.',
+    description: [
+      'Record settlement for an ALLOW decision and anchor the proof to the Casper GuardRegistry.',
+      'casper-deploy / evm-transfer: broadcast from your own wallet FIRST, then call with tx_hash.',
+      'x402-payment / cspr-trade: call WITHOUT tx_hash — the platform reads settlement from chain.',
+    ].join(' '),
     inputSchema: {
       type: 'object',
       properties: {
@@ -103,7 +214,7 @@ const TOOL_DESCRIPTORS = [
         decision_id: { type: 'string' },
         tx_hash: {
           type: 'string',
-          description: 'The transaction hash from the user\'s wallet after broadcasting on Casper or EVM. Required for casper-deploy and evm-transfer intents.',
+          description: 'Deploy/transaction hash returned by your wallet after broadcasting. Required for casper-deploy and evm-transfer; omit for x402-payment and cspr-trade.',
         },
       },
       required: ['agent_id', 'decision_id'],
@@ -118,6 +229,21 @@ export function registerCasperGuardMcpRoute(app: FastifyInstance): void {
       return reply.code(400).send(rpcError(null, -32600, 'invalid_request'));
     }
     const rpc = parsed.data;
+
+    // MCP protocol handshake — must respond before any tools/list or tools/call is accepted.
+    // mcp-remote, Claude Code, and all compliant clients send this first.
+    if (rpc.method === 'initialize') {
+      return reply.code(200).send(rpcResult(rpc.id, {
+        protocolVersion: '2024-11-05',
+        capabilities: { tools: {} },
+        serverInfo: { name: 'casper-guard', version: '1.0.0' },
+      }));
+    }
+
+    // One-way notification sent by clients after a successful initialize — no response body needed.
+    if (rpc.method === 'notifications/initialized') {
+      return reply.code(200).send({ jsonrpc: '2.0' });
+    }
 
     if (rpc.method === 'tools/list') {
       return reply.code(200).send(rpcResult(rpc.id, { tools: TOOL_DESCRIPTORS }));
@@ -141,25 +267,25 @@ export function registerCasperGuardMcpRoute(app: FastifyInstance): void {
       case 'casper_guard_authorize_payment':
         return reply
           .code(200)
-          .send(rpcResult(rpc.id, await authorizePaymentTool(app, deps!, request.headers.authorization, call.data.arguments)));
+          .send(rpcToolResult(rpc.id, await authorizePaymentTool(app, deps!, request.headers.authorization, call.data.arguments)));
       case 'casper_guard_authorize_action':
         return reply
           .code(200)
-          .send(rpcResult(rpc.id, await authorizeActionTool(app, deps!, request.headers.authorization, call.data.arguments)));
+          .send(rpcToolResult(rpc.id, await authorizeActionTool(app, deps!, request.headers.authorization, call.data.arguments)));
       case 'casper_guard_decision_status':
         return reply
           .code(200)
-          .send(rpcResult(rpc.id, await decisionStatusTool(app, request.headers.authorization, call.data.arguments)));
+          .send(rpcToolResult(rpc.id, await decisionStatusTool(app, request.headers.authorization, call.data.arguments)));
       case 'casper_guard_audit_export':
         return reply
           .code(200)
-          .send(rpcResult(rpc.id, await auditExportTool(app, request.headers.authorization, call.data.arguments)));
+          .send(rpcToolResult(rpc.id, await auditExportTool(app, request.headers.authorization, call.data.arguments)));
       case 'casper_guard_policy_check':
-        return reply.code(200).send(rpcResult(rpc.id, await policyCheckTool(app, deps, request.headers.authorization, call.data.arguments)));
+        return reply.code(200).send(rpcToolResult(rpc.id, await policyCheckTool(app, deps, request.headers.authorization, call.data.arguments)));
       case 'casper_guard_reconcile':
         return reply
           .code(200)
-          .send(rpcResult(rpc.id, await reconcileTool(app, deps!, request.headers.authorization, call.data.arguments)));
+          .send(rpcToolResult(rpc.id, await reconcileTool(app, deps!, request.headers.authorization, call.data.arguments)));
       default:
         return reply.code(200).send(rpcError(rpc.id, -32602, 'unknown_tool'));
     }
@@ -305,7 +431,7 @@ async function reconcileTool(
   if (
     decision.outcome === 'ALLOW' &&
     (decision.actionKind === 'casper-deploy' || decision.actionKind === 'evm-transfer') &&
-    decision.status === 'RESERVED' &&
+    (decision.status === 'RESERVED' || decision.status === 'SIGNED') &&
     userTxHash
   ) {
     await markDecisionSettledByUser(app.deps.pg, { decisionId, txHash: userTxHash });
@@ -341,7 +467,7 @@ async function reconcileTool(
   if (
     decision.outcome === 'ALLOW' &&
     (decision.actionKind === 'casper-deploy' || decision.actionKind === 'evm-transfer') &&
-    decision.status === 'RESERVED' &&
+    (decision.status === 'RESERVED' || decision.status === 'SIGNED') &&
     !userTxHash
   ) {
     return {
@@ -428,6 +554,16 @@ function requireString(value: unknown, field: string): string {
 
 function rpcResult(id: string | number | null | undefined, result: unknown) {
   return { jsonrpc: '2.0', id: id ?? null, result };
+}
+
+// MCP spec: tools/call responses must wrap output in content[].text, not as bare result fields.
+// Clients (Claude Code, mcp-remote) parse result.content[0].text — a bare result object is ignored.
+function rpcToolResult(id: string | number | null | undefined, data: unknown) {
+  return {
+    jsonrpc: '2.0',
+    id: id ?? null,
+    result: { content: [{ type: 'text', text: JSON.stringify(data) }] },
+  };
 }
 
 function rpcError(id: string | number | null | undefined, code: number, message: string) {
