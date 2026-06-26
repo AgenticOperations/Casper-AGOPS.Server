@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { lcpDiscover } from '../../lib/lcp/discover.js';
 import { authenticateAgent } from '../oracle/auth.js';
 import { normalizeCasperGuardIntent } from './types.js';
 import {
@@ -220,6 +221,30 @@ const TOOL_DESCRIPTORS = [
       required: ['agent_id', 'decision_id'],
     },
   },
+  {
+    name: 'casper_guard_legal_context',
+    description: [
+      'Fetch and verify the Legal Context Protocol (LCP) document for a service domain.',
+      'Returns the legal terms URL, atrHash (SHA-256 proof of terms at transaction time), trust level, and whether acceptance is required.',
+      'Call this BEFORE casper_guard_authorize_payment or casper_guard_authorize_action to surface legal terms the agent should reason about.',
+      'If atrHash is present and verified, trust_level=2+ guarantees the exact document the agent saw is cryptographically committed to the on-chain GuardRegistry anchor.',
+    ].join(' '),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        resource_id: {
+          type: 'string',
+          description: 'The resource URL or service identifier to fetch LCP context for (e.g. "https://api.weather.example/premium").',
+        },
+        min_trust_level: {
+          type: 'number',
+          enum: [1, 2, 3, 4],
+          description: 'Optional minimum trust level required. Returns an error if the discovered trust level is below this.',
+        },
+      },
+      required: ['resource_id'],
+    },
+  },
 ] as const;
 
 export function registerCasperGuardMcpRoute(app: FastifyInstance): void {
@@ -286,6 +311,10 @@ export function registerCasperGuardMcpRoute(app: FastifyInstance): void {
         return reply
           .code(200)
           .send(rpcToolResult(rpc.id, await reconcileTool(app, deps!, request.headers.authorization, call.data.arguments)));
+      case 'casper_guard_legal_context':
+        return reply
+          .code(200)
+          .send(rpcToolResult(rpc.id, await legalContextTool(call.data.arguments)));
       default:
         return reply.code(200).send(rpcError(rpc.id, -32602, 'unknown_tool'));
     }
@@ -526,6 +555,47 @@ async function readTenantDecision(
   const decision = await readCasperGuardDecision(app.deps.pg, decisionId);
   if (!decision || decision.orgId !== orgId) throw new Error('decision_not_found');
   return decision;
+}
+
+async function legalContextTool(args: Record<string, unknown>) {
+  const resourceId = requireString(args.resource_id, 'resource_id');
+  const minTrustLevel =
+    typeof args.min_trust_level === 'number' &&
+    [1, 2, 3, 4].includes(args.min_trust_level)
+      ? (args.min_trust_level as 1 | 2 | 3 | 4)
+      : null;
+
+  const result = await lcpDiscover(resourceId);
+
+  if (!result.ok) {
+    return { ok: false, reason: result.reason, resource_id: resourceId };
+  }
+
+  const ctx = result.context;
+
+  if (minTrustLevel !== null && ctx.trustLevel < minTrustLevel) {
+    return {
+      ok: false,
+      reason: 'trust_level_insufficient',
+      resource_id: resourceId,
+      discovered_trust_level: ctx.trustLevel,
+      required_trust_level: minTrustLevel,
+    };
+  }
+
+  return {
+    ok: true,
+    resource_id: resourceId,
+    terms_url: ctx.termsUrl,
+    atr_hash: ctx.atrHash,
+    trust_level: ctx.trustLevel,
+    fetched_at: ctx.fetchedAt,
+    acceptance_required: ctx.acceptanceRequired,
+    hash_verified: ctx.hashVerified,
+    note: ctx.hashVerified
+      ? 'atrHash verified — this exact document will be committed to the on-chain GuardRegistry anchor.'
+      : 'No atrHash — terms fetched informational only.',
+  };
 }
 
 function decisionStatus(decision: CasperGuardDecisionRecord) {

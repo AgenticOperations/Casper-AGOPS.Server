@@ -31,7 +31,10 @@ export type CasperGuardDenyReason =
   | 'trade_risk_exceeded'
   | 'idempotency_in_progress'
   | 'idempotency_conflict'
-  | 'x402_asset_not_supported';
+  | 'x402_asset_not_supported'
+  | 'legal_acceptance_required'
+  | 'legal_context_fetch_failed'
+  | 'legal_terms_hash_mismatch';
 
 export interface CasperGuardPolicy {
   policyRef: string;
@@ -44,6 +47,11 @@ export interface CasperGuardPolicy {
   trade?: {
     maxSlippageBps: number;
     allowedRiskLabels: string[];
+  };
+  lcp?: {
+    required: boolean;
+    minTrustLevel: 1 | 2 | 3 | 4;
+    failOpen: boolean;
   };
 }
 

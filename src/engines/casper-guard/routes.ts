@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
+import { lcpDiscover } from '../../lib/lcp/discover.js';
 import { z } from 'zod';
 import { composeSettlementReader } from '../../lib/casper/settlement-reader.js';
 import {
@@ -339,6 +340,63 @@ export async function authorizeWithStoredPolicy(
     orgId: params.orgId,
     agentId: params.agentId,
   });
+
+  const guardPolicy: CasperGuardPolicy = {
+    policyRef: `${policy.policyId}@epoch${policy.policyEpoch}`,
+    spendCap: policy.spend.spendCap.toString(),
+    perTransactionMax: policy.spend.perTransactionMax.toString(),
+    serviceScope: policy.spend.serviceScope,
+    allowedActions: allowedActionsFromRails(policy.spend.railPermission),
+    allowedNetworks: deps.networks ?? [CASPER_X402_TESTNET_NETWORK],
+    velocityLimitPerHour: policy.spend.velocityLimitPerHour,
+    trade: deps.trade ?? { maxSlippageBps: 100, allowedRiskLabels: ['low', 'medium'] },
+  } satisfies CasperGuardPolicy;
+
+  // LCP pre-authorization legal discovery
+  const lcpResult = await lcpDiscover(params.intent.resourceId);
+  const lcpPolicy = guardPolicy.lcp;
+
+  if (!lcpResult.ok) {
+    if (lcpResult.reason === 'hash_mismatch') {
+      // Hash mismatch is always terminal — never failOpen
+      return {
+        outcome: 'DENY' as const,
+        decisionId: newCasperGuardDecisionId(),
+        reason: 'legal_terms_hash_mismatch' as const,
+      };
+    }
+    // fetch_failed or parse_error: only block if lcp.required=true and failOpen=false
+    if (lcpPolicy?.required && !lcpPolicy.failOpen) {
+      return {
+        outcome: 'DENY' as const,
+        decisionId: newCasperGuardDecisionId(),
+        reason: 'legal_context_fetch_failed' as const,
+      };
+    }
+    // No lcp policy set, or failOpen=true: proceed without legal context
+  } else {
+    const ctx = lcpResult.context;
+    const minTrust = lcpPolicy?.minTrustLevel ?? 1;
+
+    // Merchant acceptanceRequired always overrides operator failOpen
+    if (ctx.acceptanceRequired && ctx.trustLevel < minTrust) {
+      return {
+        outcome: 'DENY' as const,
+        decisionId: newCasperGuardDecisionId(),
+        reason: 'legal_acceptance_required' as const,
+      };
+    }
+
+    // Attach LCP context to intent so it flows into computeCasperGuardDecisionHash via intent field
+    (params.intent as Record<string, unknown>).lcp = {
+      terms_url: ctx.termsUrl,
+      atr_hash: ctx.atrHash,
+      trust_level: ctx.trustLevel,
+      fetched_at: ctx.fetchedAt,
+      acceptance_required: ctx.acceptanceRequired,
+    };
+  }
+
   return authorizeCasperGuardIntent(
     {
       pool: app.deps.pg,
@@ -352,16 +410,7 @@ export async function authorizeWithStoredPolicy(
       orgId: params.orgId,
       agentId: params.agentId,
       intent: params.intent,
-      policy: {
-        policyRef: `${policy.policyId}@epoch${policy.policyEpoch}`,
-        spendCap: policy.spend.spendCap.toString(),
-        perTransactionMax: policy.spend.perTransactionMax.toString(),
-        serviceScope: policy.spend.serviceScope,
-        allowedActions: allowedActionsFromRails(policy.spend.railPermission),
-        allowedNetworks: deps.networks ?? [CASPER_X402_TESTNET_NETWORK],
-        velocityLimitPerHour: policy.spend.velocityLimitPerHour,
-        trade: deps.trade ?? { maxSlippageBps: 100, allowedRiskLabels: ['low', 'medium'] },
-      } satisfies CasperGuardPolicy,
+      policy: guardPolicy,
       now: Math.floor(Date.now() / 1000),
     },
   );
