@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   composeSettlementReader,
   createCasperRpcSettlementReader,
+  createFacilitatorSettlementReader,
 } from '../../src/lib/casper/settlement-reader.js';
 import type { CasperGuardDecisionRecord } from '../../src/engines/casper-guard/store.js';
+import type { CasperFacilitator } from '../../src/lib/casper/facilitator.js';
 
 const baseDecision = (over: Partial<CasperGuardDecisionRecord> = {}): CasperGuardDecisionRecord =>
   ({
@@ -67,6 +69,77 @@ describe('CasperRpcSettlementReader', () => {
       },
     });
     expect((await reader.read(baseDecision({ deployHash: null, txHash: null }))).status).toBe('pending');
+  });
+});
+
+// Minimal fake facilitator
+function makeFacilitator(result: Awaited<ReturnType<CasperFacilitator['settle']>>): CasperFacilitator {
+  return {
+    verify: async () => ({ isValid: true }),
+    settle: async () => result,
+  };
+}
+
+// Decision with no deploy hash (needs facilitator settlement)
+const unsettledDecision = baseDecision({ deployHash: null, txHash: null });
+
+describe('createFacilitatorSettlementReader', () => {
+  it('calls facilitator.settle and returns settled with deploy hash on success', async () => {
+    const fac = makeFacilitator({ success: true, txHash: 'deadbeef01' });
+    const rpcReader = { getDeploy: async () => ({ found: true, finalized: true, success: true, txHash: 'deadbeef01' }) };
+    const reader = createFacilitatorSettlementReader(fac, rpcReader);
+    const r = await reader.read(unsettledDecision);
+    expect(r.status).toBe('settled');
+    if (r.status === 'settled') {
+      expect(r.deployHash).toBe('deadbeef01');
+      expect(r.source).toBe('facilitator');
+    }
+  });
+
+  it('returns failed when facilitator.settle reports failure', async () => {
+    const fac = makeFacilitator({ success: false, reason: 'invalid_signature' });
+    const rpcReader = { getDeploy: async () => { throw new Error('should not be called'); } };
+    const reader = createFacilitatorSettlementReader(fac, rpcReader);
+    const r = await reader.read(unsettledDecision);
+    expect(r.status).toBe('failed');
+    if (r.status === 'failed') expect(r.errorCode).toBe('invalid_signature');
+  });
+
+  it('skips facilitator and delegates to RPC reader when deploy hash is already set', async () => {
+    const fac = makeFacilitator({ success: false, reason: 'should_not_be_called' });
+    fac.settle = async () => { throw new Error('facilitator should not be called'); };
+    const rpcReader = { getDeploy: async () => ({ found: true, finalized: true, success: true, txHash: '0xtx' }) };
+    const reader = createFacilitatorSettlementReader(fac, rpcReader);
+    // baseDecision() has deployHash set
+    const r = await reader.read(baseDecision());
+    expect(r.status).toBe('settled');
+    expect(r.source).toBe('casper-rpc');
+  });
+
+  it('returns failed (not throws) when facilitator.settle throws', async () => {
+    const fac: CasperFacilitator = {
+      verify: async () => ({ isValid: true }),
+      settle: async () => { throw new Error('network_error'); },
+    };
+    const rpcReader = { getDeploy: async () => ({ found: false }) };
+    const reader = createFacilitatorSettlementReader(fac, rpcReader);
+    const r = await reader.read(unsettledDecision);
+    expect(r.status).toBe('failed');
+    if (r.status === 'failed') expect(r.errorCode).toBe('facilitator_error');
+  });
+
+  it('skips facilitator for non-x402 decisions (casper-deploy uses RPC only)', async () => {
+    const fac: CasperFacilitator = {
+      verify: async () => ({ isValid: true }),
+      settle: async () => { throw new Error('should not be called for casper-deploy'); },
+    };
+    const rpcReader = { getDeploy: async () => ({ found: false }) };
+    const reader = createFacilitatorSettlementReader(fac, rpcReader);
+    const deployDecision = baseDecision({ actionKind: 'casper-deploy' as never, deployHash: null, txHash: null });
+    const r = await reader.read(deployDecision);
+    // Falls through to RPC reader, no deploy hash → pending
+    expect(r.status).toBe('pending');
+    expect(r.source).toBe('casper-rpc');
   });
 });
 
