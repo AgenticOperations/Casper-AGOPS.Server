@@ -49,6 +49,7 @@ const EnvSchema = z.object({
   CASPER_GUARD_NETWORKS: z.string().min(1).default('casper:casper-test'),
   CASPER_GUARD_MCP_URL: z.string().min(1).default('/v1/casper-guard/mcp'),
   CASPER_GUARD_FACILITATOR_RPC_URL: z.string().url().or(z.literal('')).default(''),
+  CASPER_GUARD_FACILITATOR_URL: z.string().url().or(z.literal('')).default(''),
   CASPER_GUARD_ODRA_PACKAGE_HASH: z
     .string()
     .regex(/^[0-9a-fA-F]{64}$/)
