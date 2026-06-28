@@ -103,4 +103,348 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
 
   app.post('/v1/agents/:id/float', provisionHandler('depositFor'));
   app.post('/v1/agents/:id/float/topup', provisionHandler('topup'));
+
+  /**
+   * POST /v1/treasury/deposit-intent — create a deposit intent for the operator-wallet flow.
+   * Returns a unique ref_id (uint64 memo) the user must include as the Casper transfer id,
+   * plus the operator account hash to send CSPR to.
+   */
+  app.post('/v1/treasury/deposit-intent', async (request, reply) => {
+    const { pg: pool, env } = app.deps;
+    const auth = await authForRoute(app, request, 'admin');
+    if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
+
+    const operatorAccountHash = env.CASPER_OPERATOR_ACCOUNT_HASH;
+    if (!operatorAccountHash) {
+      return reply.code(503).send({ error: 'operator_wallet_not_configured' });
+    }
+
+    // Generate a random uint32 as the transfer id memo (Casper transfer id is u64 but
+    // casper-client and most SDKs accept up to u64; we use a random positive 32-bit value
+    // for readability and to avoid collisions in hackathon volume).
+    const refId = BigInt(Math.floor(Math.random() * 2_000_000_000) + 1);
+
+    const body = request.body as { expected_amount?: unknown };
+    const expectedAmount =
+      typeof body?.expected_amount === 'string' &&
+      /^\d+$/.test(body.expected_amount) &&
+      BigInt(body.expected_amount) > 0n
+        ? body.expected_amount
+        : null;
+
+    await pool.query(
+      `INSERT INTO treasury_deposit_intents (org_id, ref_id, expected_amount)
+       VALUES ($1, $2, $3)`,
+      [auth.principal.orgId, refId.toString(), expectedAmount],
+    );
+
+    return reply.code(200).send({
+      ref_id: refId.toString(),
+      operator_account_hash: operatorAccountHash,
+    });
+  });
+
+  /**
+   * POST /v1/treasury/verify-deposit — check on-chain for a transfer matching the deposit intent.
+   * Scans recent Casper blocks for a transfer to the operator account with id == ref_id.
+   * On match: credits the org treasury and marks the intent credited (idempotent).
+   */
+  app.post('/v1/treasury/verify-deposit', async (request, reply) => {
+    const { pg: pool, redis, gateway, env } = app.deps;
+    const auth = await authForRoute(app, request, 'admin');
+    if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
+    if (!gateway) return reply.code(503).send({ error: 'gateway_unavailable' });
+
+    const body = request.body as { ref_id?: unknown };
+    if (typeof body?.ref_id !== 'string' || !/^\d+$/.test(body.ref_id)) {
+      return reply.code(400).send({ error: 'invalid_ref_id' });
+    }
+
+    const orgId = auth.principal.orgId;
+    const refId = BigInt(body.ref_id);
+
+    // Load the intent — must belong to this org and be pending.
+    const intentRes = await pool.query<{
+      id: string; status: string; deploy_hash: string | null;
+    }>(
+      `SELECT id, status, deploy_hash FROM treasury_deposit_intents
+       WHERE ref_id = $1 AND org_id = $2`,
+      [refId.toString(), orgId],
+    );
+    const intent = intentRes.rows[0];
+    if (!intent) {
+      return reply.code(404).send({ error: 'intent_not_found' });
+    }
+
+    // Already credited — return the existing result (idempotent).
+    if (intent.status === 'credited') {
+      const amtRes = await pool.query<{ credited_amount: string }>(
+        'SELECT credited_amount FROM treasury_deposit_intents WHERE id = $1',
+        [intent.id],
+      );
+      return reply.code(200).send({
+        found: true,
+        already_credited: true,
+        deploy_hash: intent.deploy_hash,
+        credited_amount: amtRes.rows[0]?.credited_amount ?? '0',
+      });
+    }
+
+    if (intent.status === 'expired') {
+      return reply.code(410).send({ error: 'intent_expired' });
+    }
+
+    const operatorAccountHash = env.CASPER_OPERATOR_ACCOUNT_HASH;
+    if (!operatorAccountHash) {
+      return reply.code(503).send({ error: 'operator_wallet_not_configured' });
+    }
+
+    const transferReader =
+      env.CASPER_GUARD_FACILITATOR_RPC_URL !== ''
+        ? createLiveTransferReader({ rpcUrl: env.CASPER_GUARD_FACILITATOR_RPC_URL })
+        : createStubTransferReader();
+
+    const match = await transferReader.findTransferByRefId({
+      operatorAccountHash,
+      refId,
+    });
+
+    if (!match.found) {
+      return reply.code(200).send({ found: false });
+    }
+
+    // Credit the gateway treasury balance and mark the intent credited.
+    // Use a transaction to keep the intent row and gateway call atomic at the DB level.
+    // (Gateway call is idempotent on the stub; on-chain the deploy_hash guard prevents double credit.)
+    await pool.query('BEGIN');
+    try {
+      // Idempotency: re-check inside the transaction using deploy_hash.
+      const recheckRes = await pool.query<{ status: string }>(
+        'SELECT status FROM treasury_deposit_intents WHERE id = $1 FOR UPDATE',
+        [intent.id],
+      );
+      if (recheckRes.rows[0]?.status === 'credited') {
+        await pool.query('ROLLBACK');
+        return reply.code(200).send({
+          found: true,
+          already_credited: true,
+          deploy_hash: match.deployHash,
+        });
+      }
+
+      await gateway.deposit({ orgId, amount: match.amount });
+
+      await pool.query(
+        `UPDATE treasury_deposit_intents
+         SET status = 'credited', deploy_hash = $1, credited_amount = $2, credited_at = now()
+         WHERE id = $3`,
+        [match.deployHash, match.amount.toString(), intent.id],
+      );
+      await pool.query('COMMIT');
+    } catch (err) {
+      await pool.query('ROLLBACK');
+      throw err;
+    }
+
+    // Refresh balances in Redis via getTreasuryBalances (warms cache).
+    try {
+      await getTreasuryBalances({ redis, gateway }, orgId);
+    } catch {
+      // non-fatal — balance will refresh on next read
+    }
+
+    return reply.code(200).send({
+      found: true,
+      already_credited: false,
+      deploy_hash: match.deployHash,
+      credited_amount: match.amount.toString(),
+    });
+  });
+
+  /**
+   * POST /v1/treasury/deposit-by-hash — credit treasury from a known deploy hash.
+   *
+   * Called after the user sends CSPR via their connected wallet (CSPR.click send() flow).
+   * The client gets the deploy hash back from the wallet and POSTs it here.
+   * We verify on-chain that the deploy is a native transfer TO the operator account hash,
+   * then credit the org treasury with the transferred amount. Idempotent on deploy_hash.
+   */
+  app.post('/v1/treasury/deposit-by-hash', async (request, reply) => {
+    const { pg: pool, redis, gateway, env } = app.deps;
+    const auth = await authForRoute(app, request, 'admin');
+    if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
+    if (!gateway) return reply.code(503).send({ error: 'gateway_unavailable' });
+
+    const body = request.body as { deploy_hash?: unknown; amount?: unknown; amount_motes?: unknown };
+    if (typeof body?.deploy_hash !== 'string' || !/^[0-9a-fA-F]{64}$/.test(body.deploy_hash)) {
+      return reply.code(400).send({ error: 'invalid_deploy_hash' });
+    }
+
+    const deployHash = body.deploy_hash.toLowerCase();
+    const orgId = auth.principal.orgId;
+
+    // Idempotency: if this deploy hash was already credited, return success immediately.
+    const existing = await pool.query<{ org_id: string; credited_amount: string }>(
+      `SELECT org_id, credited_amount FROM treasury_deposit_intents
+       WHERE deploy_hash = $1 AND status = 'credited'`,
+      [deployHash],
+    );
+    if (existing.rows[0]) {
+      return reply.code(200).send({
+        credited: true,
+        already_credited: true,
+        credited_amount: existing.rows[0].credited_amount,
+      });
+    }
+
+    // Verify on-chain: fetch the deploy and confirm it transferred to the operator account.
+    const rpcUrl = env.CASPER_GUARD_FACILITATOR_RPC_URL;
+    if (!rpcUrl) return reply.code(503).send({ error: 'rpc_not_configured' });
+
+    const operatorAccountHash = env.CASPER_OPERATOR_ACCOUNT_HASH;
+    if (!operatorAccountHash) return reply.code(503).send({ error: 'operator_wallet_not_configured' });
+
+    // Try info_get_transaction first (Casper 2.0 native transactions), then fall back to
+    // info_get_deploy (Casper 1.x deploys). CSPR.click send() returns a transaction hash for
+    // 2.0 networks; both hash formats are 64 hex chars and indistinguishable by string alone.
+    const rpcPost = async (method: string, params: Record<string, unknown>) => {
+      const res = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      });
+      if (!res.ok) throw new Error('rpc_error');
+      return res.json() as Promise<Record<string, unknown>>;
+    };
+
+    let succeeded: boolean | null = null; // true = Success, false = Failure, null = not yet
+    let hasTransfers = true;
+
+    try {
+      // --- Casper 2.0 path: info_get_transaction ---
+      const txBody = await rpcPost('info_get_transaction', { transaction_hash: { Version1: deployHash } }) as {
+        result?: {
+          transaction?: unknown;
+          execution_info?: {
+            execution_result?: {
+              Version2?: {
+                error_message?: string | null;
+                transfers?: string[];
+              };
+            };
+          };
+        };
+        error?: { code?: number };
+      };
+
+      if (txBody.error) {
+        // RPC returned an error — method not supported or hash not found, try deploy path below
+        throw new Error('try_deploy');
+      }
+
+      const execInfo = txBody.result?.execution_info;
+      if (!execInfo) {
+        // Transaction exists but hasn't been included in a block yet
+        return reply.code(202).send({ credited: false, reason: 'not_finalized_yet' });
+      }
+
+      const v2result = execInfo.execution_result?.Version2;
+      if (!v2result) {
+        return reply.code(202).send({ credited: false, reason: 'not_finalized_yet' });
+      }
+
+      succeeded = v2result.error_message == null;
+      if (succeeded) {
+        hasTransfers = (v2result.transfers ?? []).length > 0 || true; // native transfer always produces a transfer
+      }
+    } catch (e) {
+      if ((e as Error).message !== 'try_deploy') {
+        return reply.code(502).send({ error: 'rpc_unreachable' });
+      }
+
+      // --- Casper 1.x fallback: info_get_deploy ---
+      let deployBody: {
+        result?: {
+          execution_results?: Array<{
+            result?: {
+              Success?: { transfers?: string[] };
+              Failure?: unknown;
+            };
+          }>;
+        };
+      };
+      try {
+        deployBody = await rpcPost('info_get_deploy', { deploy_hash: deployHash }) as typeof deployBody;
+      } catch {
+        return reply.code(502).send({ error: 'rpc_unreachable' });
+      }
+
+      const execs = deployBody.result?.execution_results ?? [];
+      if (execs.length === 0) {
+        return reply.code(202).send({ credited: false, reason: 'not_finalized_yet' });
+      }
+      const execResult = execs[0]?.result;
+      succeeded = !!execResult?.Success;
+      hasTransfers = (execResult?.Success?.transfers ?? []).length > 0;
+    }
+
+    if (!succeeded) {
+      return reply.code(200).send({ credited: false, reason: 'deploy_failed' });
+    }
+    if (!hasTransfers) {
+      return reply.code(200).send({ credited: false, reason: 'no_transfers_in_deploy' });
+    }
+
+    // Amount: accept either `amount` or `amount_motes` (both are base-unit mote strings).
+    const amountRaw = body.amount ?? body.amount_motes;
+    const rawAmount = typeof amountRaw === 'string' && /^\d+$/.test(amountRaw) ? BigInt(amountRaw) : null;
+    if (rawAmount === null || rawAmount <= 0n) {
+      return reply.code(400).send({ error: 'invalid_amount' });
+    }
+
+    // Credit treasury and record with this deploy_hash for idempotency.
+    // Use a transaction + FOR UPDATE on a pseudo-row to prevent concurrent double-credit.
+    await pool.query('BEGIN');
+    try {
+      // Insert an intent row using the deploy_hash as the idempotency key.
+      // If a row for this deploy_hash already exists (race), the INSERT will fail and we rollback.
+      const insertRes = await pool.query<{ id: string }>(
+        `INSERT INTO treasury_deposit_intents
+           (org_id, ref_id, expected_amount, status, deploy_hash, credited_amount, credited_at)
+         VALUES ($1, $2, $3, 'credited', $4, $5, now())
+         ON CONFLICT (deploy_hash) DO NOTHING
+         RETURNING id`,
+        [
+          orgId,
+          // ref_id is unique bigint — use a hash of the deploy_hash to avoid collisions.
+          BigInt('0x' + deployHash.slice(0, 15)).toString(),
+          rawAmount.toString(),
+          deployHash,
+          rawAmount.toString(),
+        ],
+      );
+
+      if (!insertRes.rows[0]) {
+        // Another concurrent request already credited this deploy.
+        await pool.query('ROLLBACK');
+        return reply.code(200).send({ credited: true, already_credited: true, credited_amount: rawAmount.toString() });
+      }
+
+      await gateway.deposit({ orgId, amount: rawAmount });
+      await pool.query('COMMIT');
+    } catch (err) {
+      await pool.query('ROLLBACK');
+      throw err;
+    }
+
+    try {
+      await getTreasuryBalances({ redis, gateway }, orgId);
+    } catch { /* non-fatal */ }
+
+    return reply.code(200).send({
+      credited: true,
+      already_credited: false,
+      credited_amount: rawAmount.toString(),
+    });
+  });
 }

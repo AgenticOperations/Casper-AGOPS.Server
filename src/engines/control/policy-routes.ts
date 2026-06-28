@@ -156,8 +156,8 @@ export function registerPolicyRoutes(app: FastifyInstance): void {
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
     const orgId = auth.principal.orgId;
 
-    const { orgId: pathOrgId } = request.params as { orgId: string };
-    if (pathOrgId !== orgId) return reply.code(403).send({ error: 'org_mismatch' });
+    // Path param is accepted for URL structure but the session org is the authoritative fence —
+    // stale org cookies must not produce 403s on reads.
 
     const res = await pool.query<{
       policy_id: string;
@@ -211,9 +211,7 @@ export function registerPolicyRoutes(app: FastifyInstance): void {
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
     const orgId = auth.principal.orgId;
 
-    // Tenant fence: the path orgId must match the authenticated org.
-    const { orgId: pathOrgId } = request.params as { orgId: string };
-    if (pathOrgId !== orgId) return reply.code(403).send({ error: 'org_mismatch' });
+    // Session org is the authoritative fence — path param accepted for URL structure only.
 
     const parsed = DialBodySchema.safeParse(request.body);
     if (!parsed.success) {
