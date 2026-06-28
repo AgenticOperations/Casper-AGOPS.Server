@@ -1,14 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import { buildCasperFacilitator } from '../../src/lib/casper/facilitator.js';
+import { buildHttpCasperFacilitator } from '../../src/lib/casper/facilitator.js';
 
-describe('buildCasperFacilitator', () => {
-  it('returns undefined when no rpc url is configured (honest-blocked)', async () => {
-    const fac = await buildCasperFacilitator({ pemPath: '/tmp/x.pem', algorithm: 'secp256k1', rpcUrl: '' });
+describe('buildHttpCasperFacilitator', () => {
+  it('returns undefined when facilitatorUrl is empty (honest-blocked)', () => {
+    const fac = buildHttpCasperFacilitator({ facilitatorUrl: '', accessToken: '' });
     expect(fac).toBeUndefined();
   });
 
-  it('returns undefined when no pem path is configured (honest-blocked)', async () => {
-    const fac = await buildCasperFacilitator({ pemPath: '', algorithm: 'secp256k1', rpcUrl: 'https://node.testnet.casper.network/rpc' });
-    expect(fac).toBeUndefined();
+  it('returns a facilitator with verify and settle when url is set', () => {
+    const fac = buildHttpCasperFacilitator({ facilitatorUrl: 'https://x402-facilitator.cspr.cloud', accessToken: 'test-token' });
+    expect(fac).toBeDefined();
+    expect(typeof fac!.verify).toBe('function');
+    expect(typeof fac!.settle).toBe('function');
   });
 });

@@ -80,8 +80,11 @@ function makeFacilitator(result: Awaited<ReturnType<CasperFacilitator['settle']>
   };
 }
 
+// Valid base64-encoded x402 payload the facilitator reader expects when settling.
+const fakeHeader = Buffer.from(JSON.stringify({ accepted: { scheme: 'exact' } })).toString('base64');
+
 // Decision with no deploy hash (needs facilitator settlement)
-const unsettledDecision = baseDecision({ deployHash: null, txHash: null });
+const unsettledDecision = baseDecision({ deployHash: null, txHash: null, signedHeaderValue: fakeHeader } as never);
 
 describe('createFacilitatorSettlementReader', () => {
   it('calls facilitator.settle and returns settled with deploy hash on success', async () => {
@@ -128,6 +131,16 @@ describe('createFacilitatorSettlementReader', () => {
     if (r.status === 'failed') expect(r.errorCode).toBe('facilitator_error');
   });
 
+  it('returns failed with facilitator_no_header when signedHeaderValue is missing', async () => {
+    const fac = makeFacilitator({ success: true, txHash: 'deadbeef01' });
+    const rpcReader = { getDeploy: async () => ({ found: false }) };
+    const reader = createFacilitatorSettlementReader(fac, rpcReader);
+    const noHeaderDecision = baseDecision({ deployHash: null, txHash: null });
+    const r = await reader.read(noHeaderDecision);
+    expect(r.status).toBe('failed');
+    if (r.status === 'failed') expect(r.errorCode).toBe('facilitator_no_header');
+  });
+
   it('skips facilitator for non-x402 decisions (casper-deploy uses RPC only)', async () => {
     const fac: CasperFacilitator = {
       verify: async () => ({ isValid: true }),
@@ -135,7 +148,7 @@ describe('createFacilitatorSettlementReader', () => {
     };
     const rpcReader = { getDeploy: async () => ({ found: false }) };
     const reader = createFacilitatorSettlementReader(fac, rpcReader);
-    const deployDecision = baseDecision({ actionKind: 'casper-deploy' as never, deployHash: null, txHash: null });
+    const deployDecision = baseDecision({ actionKind: 'casper-deploy' as never, deployHash: null, txHash: null, signedHeaderValue: fakeHeader } as never);
     const r = await reader.read(deployDecision);
     // Falls through to RPC reader, no deploy hash → pending
     expect(r.status).toBe('pending');

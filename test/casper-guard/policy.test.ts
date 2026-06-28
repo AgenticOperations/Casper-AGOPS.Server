@@ -752,6 +752,114 @@ describe('Casper Guard policy and hold lifecycle', () => {
     });
   });
 
+  it('denies x402-payment when destination does not match the policy-registered payTo', async ({ skip }) => {
+    if (!stores) return skip();
+    const { agentId, orgId } = await seedAgent(stores.pool, stores.redis, 100);
+    let signCalls = 0;
+    const signer = signerReturning('sha256:should-not-be-reached', () => { signCalls += 1; });
+
+    // The registeredPayTo is what the operator bound to 'svc:casper-paid-api'.
+    const registeredPayTo = `00${'b'.repeat(64)}`;
+    // The attackerPayTo is an out-of-scope service the agent routes to instead.
+    const attackerPayTo = `00${'c'.repeat(64)}`;
+
+    // Intent has an in-scope resource_id but a different payTo — the bypass.
+    const bypassIntent = normalizeCasperGuardIntent({
+      kind: 'x402-payment',
+      network: 'casper:casper-test',
+      resource_id: 'svc:casper-paid-api',   // in scope
+      amount: '10',
+      asset: { kind: 'cep18', package_hash: 'a'.repeat(64), name: 'Test CEP18', version: '1' },
+      pay_to: attackerPayTo,                 // NOT the registered destination
+      max_timeout_seconds: 900,
+    });
+
+    const policyWithDestinations: CasperGuardPolicy = {
+      ...allowPolicy,
+      serviceDestinations: { 'svc:casper-paid-api': registeredPayTo },
+    };
+
+    const result = await authorizeCasperGuardIntent(
+      { pool: stores.pool, redis: stores.redis, signer },
+      {
+        decisionId: 'cgd_dest_mismatch',
+        holdId: 'cgh_dest_mismatch',
+        idempotencyKey: 'idem_dest_mismatch',
+        orgId,
+        agentId,
+        intent: bypassIntent,
+        policy: policyWithDestinations,
+        now: 2_000_000,
+      },
+    );
+
+    expect(result).toEqual({
+      outcome: 'DENY',
+      decisionId: 'cgd_dest_mismatch',
+      reason: 'service_scope_destination_mismatch',
+    });
+    expect(signCalls).toBe(0);
+    expect(await stores.redis.get(keys.reserved(agentId))).toBeNull();
+  });
+
+  it('allows x402-payment when destination matches the policy-registered payTo', async ({ skip }) => {
+    if (!stores) return skip();
+    const { agentId, orgId } = await seedAgent(stores.pool, stores.redis, 100);
+    const signer = signerReturning('sha256:destination-matches');
+
+    const registeredPayTo = `00${'b'.repeat(64)}`;
+    const validIntent = casperX402Intent(); // uses `00${'b'.repeat(64)}` as pay_to
+
+    const policyWithDestinations: CasperGuardPolicy = {
+      ...allowPolicy,
+      serviceDestinations: { 'svc:casper-paid-api': registeredPayTo },
+    };
+
+    const result = await authorizeCasperGuardIntent(
+      { pool: stores.pool, redis: stores.redis, signer },
+      {
+        decisionId: 'cgd_dest_match',
+        holdId: 'cgh_dest_match',
+        idempotencyKey: 'idem_dest_match',
+        orgId,
+        agentId,
+        intent: validIntent,
+        policy: policyWithDestinations,
+        now: 2_000_000,
+      },
+    );
+
+    expect(result).toMatchObject({ outcome: 'ALLOW', decisionId: 'cgd_dest_match' });
+  });
+
+  it('allows x402-payment for resources not in serviceDestinations regardless of payTo', async ({ skip }) => {
+    if (!stores) return skip();
+    const { agentId, orgId } = await seedAgent(stores.pool, stores.redis, 100);
+    const signer = signerReturning('sha256:unbound-resource');
+
+    // serviceDestinations only binds 'svc:other' — 'svc:casper-paid-api' is unbound, so any payTo passes.
+    const policyWithPartialDestinations: CasperGuardPolicy = {
+      ...allowPolicy,
+      serviceDestinations: { 'svc:other': `00${'d'.repeat(64)}` },
+    };
+
+    const result = await authorizeCasperGuardIntent(
+      { pool: stores.pool, redis: stores.redis, signer },
+      {
+        decisionId: 'cgd_unbound_resource',
+        holdId: 'cgh_unbound_resource',
+        idempotencyKey: 'idem_unbound_resource',
+        orgId,
+        agentId,
+        intent: casperX402Intent(),
+        policy: policyWithPartialDestinations,
+        now: 2_000_000,
+      },
+    );
+
+    expect(result).toMatchObject({ outcome: 'ALLOW', decisionId: 'cgd_unbound_resource' });
+  });
+
   it('releases failed or expired holds idempotently', async ({ skip }) => {
     if (!stores) return skip();
     const { agentId, orgId } = await seedAgent(stores.pool, stores.redis, 100);
