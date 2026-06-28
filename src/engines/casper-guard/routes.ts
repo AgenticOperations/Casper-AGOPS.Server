@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { lcpDiscover } from '../../lib/lcp/discover.js';
+import { emitDecisionSafe } from '../monitoring/telemetry.js';
+import type { DenyReason } from '../../contracts/index.js';
 import { z } from 'zod';
 import { composeSettlementReader } from '../../lib/casper/settlement-reader.js';
 import {
@@ -52,8 +54,17 @@ export interface CasperGuardDeps {
     allowedRiskLabels: string[];
   };
   tradeExecutor?: {
+    available: boolean;
     execute(input: { intent: { pair: string; amount: string } }): Promise<unknown>;
   };
+  /**
+   * Authoritative (resourceId → payTo) bindings for x402-payment scope enforcement.
+   * When a resourceId is present in this map, authorize_payment rejects any intent whose
+   * destination (payTo from accepts[0]) does not exactly match the registered address.
+   * This closes the policy-bypass where an agent substitutes an in-scope resource.url
+   * to obtain a signature for an out-of-scope payTo recipient.
+   */
+  serviceDestinations?: Record<string, string>;
 }
 
 const positiveIntegerString = z.string().regex(/^[1-9][0-9]*$/);
@@ -226,12 +237,13 @@ export function registerCasperGuardRoutes(app: FastifyInstance): void {
     }
 
     const decision = await readCasperGuardDecision(app.deps.pg, result.decisionId);
+    const userBroadcastRequired = intent.kind === 'evm-transfer';
     return reply.code(200).send({
       outcome: 'ALLOW',
       decision_id: result.decisionId,
       hold_id: result.holdId,
       signed_header_hash: result.signedHeaderHash,
-      signature_required: true,
+      ...(userBroadcastRequired ? { signature_required: true } : {}),
       audit: auditSummary(decision),
     });
   });
@@ -346,6 +358,7 @@ export async function authorizeWithStoredPolicy(
     spendCap: policy.spend.spendCap.toString(),
     perTransactionMax: policy.spend.perTransactionMax.toString(),
     serviceScope: policy.spend.serviceScope,
+    ...(deps.serviceDestinations ? { serviceDestinations: deps.serviceDestinations } : {}),
     allowedActions: allowedActionsFromRails(policy.spend.railPermission),
     allowedNetworks: deps.networks ?? [CASPER_X402_TESTNET_NETWORK],
     velocityLimitPerHour: policy.spend.velocityLimitPerHour,
@@ -397,7 +410,8 @@ export async function authorizeWithStoredPolicy(
     };
   }
 
-  return authorizeCasperGuardIntent(
+  const now = Math.floor(Date.now() / 1000);
+  const result = await authorizeCasperGuardIntent(
     {
       pool: app.deps.pg,
       redis: app.deps.redis,
@@ -411,9 +425,28 @@ export async function authorizeWithStoredPolicy(
       agentId: params.agentId,
       intent: params.intent,
       policy: guardPolicy,
-      now: Math.floor(Date.now() / 1000),
+      now,
     },
   );
+
+  // Emit fail-open telemetry copy to Redis stream so the monitoring feed shows Casper Guard decisions.
+  // Fire-and-forget (never awaited) — a telemetry failure must never block or fail an authorization.
+  const telemetryBase = {
+    agentId: params.agentId,
+    orgId: params.orgId,
+    railScheme: railForAction(params.intent.kind),
+    railChain: params.intent.network ?? '',
+    resourceId: params.intent.resourceId,
+    amount: params.intent.amount ?? '0',
+    ts: now,
+  };
+  if (result.outcome === 'ALLOW') {
+    void emitDecisionSafe(app.deps.redis, { ...telemetryBase, paymentId: result.decisionId, outcome: 'ALLOW' });
+  } else {
+    void emitDecisionSafe(app.deps.redis, { ...telemetryBase, paymentId: result.decisionId, outcome: 'DENY', reason: result.reason as DenyReason });
+  }
+
+  return result;
 }
 
 function capabilities(deps: CasperGuardDeps | undefined) {
@@ -450,7 +483,9 @@ function setupStatus(deps: CasperGuardDeps | undefined) {
         ? { status: 'ready' }
         : { status: 'blocked', reason: live.reason },
       odra_anchor: odra.configured ? { status: 'ready' } : { status: 'blocked', reason: odra.reason },
-      cspr_trade_policy: { status: 'ready' },
+      cspr_trade_policy: deps?.tradeExecutor?.available
+        ? { status: 'ready' }
+        : { status: 'blocked', reason: 'cspr_trade_mcp_not_configured' },
     },
   };
 }

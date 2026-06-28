@@ -82,6 +82,7 @@ export interface CasperGuardDecisionRecord {
   signerKind: string | null;
   rawRequirementHash: string | null;
   signedHeaderHash: string | null;
+  signedHeaderValue: string | null;
   txHash: string | null;
   deployHash: string | null;
   intent: CasperGuardIntent;
@@ -119,6 +120,7 @@ export async function markCasperGuardDecisionSigned(
   input: {
     decisionId: string;
     signedHeaderHash: string;
+    signedHeaderValue?: string | null;
     txHash?: string | null;
     deployHash?: string | null;
   },
@@ -127,8 +129,9 @@ export async function markCasperGuardDecisionSigned(
     `UPDATE casper_guard_decisions
         SET status = 'SIGNED',
             signed_header_hash = $2,
-            tx_hash = COALESCE($3, tx_hash),
-            deploy_hash = COALESCE($4, deploy_hash),
+            signed_header_value = COALESCE($3, signed_header_value),
+            tx_hash = COALESCE($4, tx_hash),
+            deploy_hash = COALESCE($5, deploy_hash),
             updated_at = now()
       WHERE decision_id = $1
         AND status = 'RESERVED'
@@ -139,7 +142,7 @@ export async function markCasperGuardDecisionSigned(
            WHERE decision_id = $1
              AND status = 'RESERVED'
         )`,
-    [input.decisionId, input.signedHeaderHash, input.txHash ?? null, input.deployHash ?? null],
+    [input.decisionId, input.signedHeaderHash, input.signedHeaderValue ?? null, input.txHash ?? null, input.deployHash ?? null],
   );
   return result.rowCount === 1;
 }
@@ -462,8 +465,8 @@ async function readCasperGuardDecisionBy(
   const decision = await pool.query<CasperGuardDecisionRow>(
     `SELECT decision_id, idempotency_key, org_id, agent_id, action_kind, network, resource_id,
             amount::text, asset_kind, asset_ref, destination, status, outcome, reason_code,
-            policy_ref, signer_kind, raw_requirement_hash, signed_header_hash, tx_hash,
-            deploy_hash, intent_json
+            policy_ref, signer_kind, raw_requirement_hash, signed_header_hash, signed_header_value,
+            tx_hash, deploy_hash, intent_json
        FROM casper_guard_decisions
       WHERE ${whereClause}
       ORDER BY created_at ASC
@@ -498,6 +501,7 @@ async function readCasperGuardDecisionBy(
     signerKind: row.signer_kind,
     rawRequirementHash: row.raw_requirement_hash,
     signedHeaderHash: row.signed_header_hash,
+    signedHeaderValue: row.signed_header_value ?? null,
     txHash: row.tx_hash,
     deployHash: row.deploy_hash,
     intent: row.intent_json,
@@ -530,6 +534,7 @@ interface CasperGuardDecisionRow {
   signer_kind: string | null;
   raw_requirement_hash: string | null;
   signed_header_hash: string | null;
+  signed_header_value: string | null;
   tx_hash: string | null;
   deploy_hash: string | null;
   intent_json: CasperGuardIntent;

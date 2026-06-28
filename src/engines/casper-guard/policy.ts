@@ -26,6 +26,7 @@ export type CasperGuardDenyReason =
   | 'action_not_allowed'
   | 'network_not_allowed'
   | 'service_not_allowed'
+  | 'service_scope_destination_mismatch'
   | 'velocity_exceeded'
   | 'org_suspended'
   | 'trade_risk_exceeded'
@@ -41,6 +42,15 @@ export interface CasperGuardPolicy {
   spendCap: string;
   perTransactionMax: string;
   serviceScope: string[];
+  /**
+   * Authoritative (resourceId → payTo) bindings registered by the operator.
+   * When an entry exists for the intent's resourceId, the intent's destination
+   * (payTo from accepts[0]) MUST exactly match the registered address.
+   * An agent cannot substitute an in-scope resourceId to obtain authorization
+   * for a different payTo recipient — the destination is enforced at the policy
+   * layer, independent of what the agent claims in payment_required.resource.url.
+   */
+  serviceDestinations?: Record<string, string>;
   allowedActions: CasperGuardActionKind[];
   allowedNetworks: CasperGuardNetwork[];
   velocityLimitPerHour: number;
@@ -210,6 +220,7 @@ export async function authorizeCasperGuardIntent(
       const signedMarked = await markCasperGuardDecisionSigned(deps.pool, {
         decisionId: params.decisionId,
         signedHeaderHash: signed.signedHeaderHash,
+        signedHeaderValue: signed.headers?.['PAYMENT-SIGNATURE'] ?? null,
         txHash: signed.txHash ?? null,
         deployHash: signed.deployHash ?? null,
       });
@@ -282,6 +293,21 @@ async function evaluateCasperGuardPolicy(
   if (!params.policy.serviceScope.includes(params.intent.resourceId)) {
     return { allow: false, reason: 'service_not_allowed' };
   }
+
+  // Destination binding: when the policy registers an authoritative payTo for this resourceId,
+  // the intent's destination MUST match. This closes the policy-bypass where an agent supplies
+  // an in-scope resourceId in payment_required.resource.url while routing the payment to an
+  // out-of-scope service's payTo address.
+  if (params.intent.kind === 'x402-payment') {
+    const registeredDestination = params.policy.serviceDestinations?.[params.intent.resourceId];
+    if (
+      registeredDestination !== undefined &&
+      registeredDestination.trim().toLowerCase() !== params.intent.destination.trim().toLowerCase()
+    ) {
+      return { allow: false, reason: 'service_scope_destination_mismatch' };
+    }
+  }
+
   if (params.intent.kind === 'x402-payment' && params.intent.asset.kind !== 'cep18') {
     return { allow: false, reason: 'x402_asset_not_supported' };
   }

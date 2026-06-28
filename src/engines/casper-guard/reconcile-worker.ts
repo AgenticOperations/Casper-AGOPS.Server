@@ -227,7 +227,9 @@ async function ensureAuditAnchor(
     return await confirmCasperGuardAuditAnchor(deps.pool, { anchorId, txHash: anchored.txHash });
   } catch (err) {
     await failCasperGuardAuditAnchor(deps.pool, anchorId);
-    throw err;
+    // Anchoring failure is non-fatal — settlement already succeeded. Log and return false.
+    console.error('casper_guard_anchor_failed', err instanceof Error ? err.message : String(err));
+    return false;
   }
 }
 

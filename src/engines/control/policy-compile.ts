@@ -41,7 +41,9 @@ export function compileSpend(layers: SpendPolicy[]): SpendPolicy {
   return {
     spendCap: bigintMin(layers.map((l) => l.spendCap)),
     perTransactionMax: bigintMin(layers.map((l) => l.perTransactionMax)),
-    serviceScope: intersectAll(layers.map((l) => l.serviceScope)),
+    // serviceScope unions across all layers: org sets the baseline every agent gets,
+    // and agent layers can extend it with additional services. Deduped, org-first order.
+    serviceScope: [...new Set(layers.flatMap((l) => l.serviceScope))],
     railPermission: intersectAll(layers.map((l) => l.railPermission)),
     velocityLimitPerHour: numberMin(layers.map((l) => l.velocityLimitPerHour)),
   };

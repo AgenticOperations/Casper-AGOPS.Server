@@ -1,58 +1,70 @@
 /**
- * Thin facilitator wrapper around `@make-software/casper-x402`'s ExactCasperScheme.
+ * Option B: HTTP facilitator client that delegates to a hosted x402 facilitator service
+ * (e.g. https://x402-facilitator.cspr.cloud). The facilitator runs ExactCasperScheme on
+ * its own funded key — we only POST the payload and get back a deploy hash. No PEM needed here.
  *
- * Builds a FacilitatorCasperSigner from the funded PEM and exposes a narrow verify/settle
- * surface normalized away from the raw `@x402/core` VerifyResponse/SettleResponse shapes.
- * Honest-blocked: with no rpcUrl or no pemPath this returns `undefined` — never a fake facilitator.
+ * Wire shape mirrors the reference facilitator (js/examples/facilitator/index.ts):
+ *   POST /verify  { paymentPayload, paymentRequirements } → { isValid, invalidReason? }
+ *   POST /settle  { paymentPayload, paymentRequirements } → { success, transaction?, errorReason?, errorMessage? }
  */
-
-const importRuntime = (s: string): Promise<unknown> => import(/* @vite-ignore */ s) as Promise<unknown>;
-
-/**
- * casper-js-sdk `KeyAlgorithm`: ED25519 = 1, SECP256K1 = 2. The facilitator signer must load the PEM
- * under the SAME algorithm it was generated with (see {@link CASPER_KEY_ALGORITHM} in ./signer.ts).
- */
-const KEY_ALGORITHM = { ed25519: 1, secp256k1: 2 } as const;
-export type CasperKeyAlgorithmName = keyof typeof KEY_ALGORITHM;
-
-type FacilitatorRuntime = {
-  createFacilitatorCasperSigner(pemPath: string, algorithm: number | undefined, rpcUrl: string): Promise<unknown>;
-};
-
-type FacilitatorSchemeRuntime = {
-  ExactCasperScheme: new (signer: unknown) => {
-    verify(payload: unknown, requirements: unknown): Promise<{ isValid: boolean; invalidReason?: string }>;
-    settle(payload: unknown, requirements: unknown): Promise<{ success: boolean; transaction?: string; errorReason?: string }>;
-  };
-};
 
 export interface CasperFacilitator {
   verify(input: { payload: unknown; requirements: unknown }): Promise<{ isValid: boolean; reason?: string }>;
   settle(input: { payload: unknown; requirements: unknown }): Promise<{ success: boolean; txHash?: string; reason?: string }>;
 }
 
-export async function buildCasperFacilitator(cfg: {
-  pemPath: string;
-  algorithm: CasperKeyAlgorithmName;
-  rpcUrl: string;
-}): Promise<CasperFacilitator | undefined> {
-  if (cfg.rpcUrl === '' || cfg.pemPath === '') return undefined;
+type VerifyWire = { isValid: boolean; invalidReason?: string };
+type SettleWire = { success: boolean; transaction?: string; errorReason?: string; errorMessage?: string };
 
-  const sdk = (await importRuntime('@make-software/casper-x402')) as FacilitatorRuntime;
-  const signer = await sdk.createFacilitatorCasperSigner(cfg.pemPath, KEY_ALGORITHM[cfg.algorithm], cfg.rpcUrl);
-  const facMod = (await importRuntime('@make-software/casper-x402/exact/facilitator')) as FacilitatorSchemeRuntime;
-  const scheme = new facMod.ExactCasperScheme(signer);
+/**
+ * Build an HTTP facilitator client that calls the hosted CSPR.cloud facilitator.
+ * Returns undefined when facilitatorUrl is empty (honest-blocked).
+ */
+export function buildHttpCasperFacilitator(cfg: {
+  facilitatorUrl: string;
+  accessToken: string;
+}): CasperFacilitator | undefined {
+  if (cfg.facilitatorUrl === '') return undefined;
+  const base = cfg.facilitatorUrl.replace(/\/$/, '');
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+    'accept': 'application/json',
+    ...(cfg.accessToken !== '' ? { 'authorization': cfg.accessToken } : {}),
+  };
 
   return {
     async verify({ payload, requirements }) {
-      const r = await scheme.verify(payload, requirements);
-      return r.isValid ? { isValid: true } : { isValid: false, reason: r.invalidReason ?? 'casper_verify_failed' };
+      let res: Response;
+      try {
+        res = await fetch(`${base}/verify`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ paymentPayload: payload, paymentRequirements: requirements }),
+        });
+      } catch (err) {
+        return { isValid: false, reason: err instanceof Error ? err.message : 'http_error' };
+      }
+      if (!res.ok) return { isValid: false, reason: `http_${res.status}` };
+      const wire = (await res.json()) as VerifyWire;
+      return wire.isValid ? { isValid: true } : { isValid: false, reason: wire.invalidReason ?? 'casper_verify_failed' };
     },
+
     async settle({ payload, requirements }) {
-      const r = await scheme.settle(payload, requirements);
-      return r.success
-        ? { success: true, ...(r.transaction ? { txHash: r.transaction } : {}) }
-        : { success: false, reason: r.errorReason ?? 'casper_settle_failed' };
+      let res: Response;
+      try {
+        res = await fetch(`${base}/settle`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ paymentPayload: payload, paymentRequirements: requirements }),
+        });
+      } catch (err) {
+        return { success: false, reason: err instanceof Error ? err.message : 'http_error' };
+      }
+      if (!res.ok) return { success: false, reason: `http_${res.status}` };
+      const wire = (await res.json()) as SettleWire;
+      return wire.success
+        ? { success: true, ...(wire.transaction ? { txHash: wire.transaction } : {}) }
+        : { success: false, reason: wire.errorMessage ? `${wire.errorReason ?? 'casper_settle_failed'}: ${wire.errorMessage}` : (wire.errorReason ?? 'casper_settle_failed') };
     },
   };
 }

@@ -28,7 +28,7 @@ export async function seedDefaultOrgPolicies(
   const spend: SpendPolicy = {
     spendCap: 100n * CSPR,
     perTransactionMax: 25n * CSPR,
-    serviceScope: ['svc:casper-paid-api', 'cspr.trade:swap', 'casper:deploy:guard-registry'],
+    serviceScope: ['svc:casper-paid-api', 'svc:order-book', 'svc:risk-oracle', 'svc:trade-log-publish', 'cspr.trade:swap', 'casper:deploy:guard-registry'],
     railPermission: ['raw-x402', 'casper-x402', 'cspr-trade', 'casper-deploy'],
     velocityLimitPerHour: 60,
   };
