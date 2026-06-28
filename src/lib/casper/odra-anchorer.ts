@@ -38,7 +38,7 @@ type CasperSdk = {
   StoredVersionedContractByHash: new (hash: unknown, entryPoint: string, args: unknown) => unknown;
   Args: { fromMap(record: Record<string, unknown>): unknown };
   CLValue: { newCLString(val: string): unknown };
-  ContractHash: { fromHex(hex: string): unknown };
+  Hash: { fromHex(hex: string): unknown };
   Deploy: { makeDeploy(header: unknown, payment: unknown, session: unknown): { sign(key: unknown): void } };
   // Casper 2.0 Transaction API
   NativeTransferBuilder: new () => {
@@ -85,7 +85,7 @@ export function createLiveCasperDeploySubmitter(cfg: {
       const namedArgs = sdk.Args.fromMap(
         Object.fromEntries(Object.entries(args).map(([k, v]) => [k, sdk.CLValue.newCLString(v)])),
       );
-      const contractHash = sdk.ContractHash.fromHex(packageHash);
+      const contractHash = sdk.Hash.fromHex(packageHash);
       const session = new sdk.ExecutableDeployItem();
       session.storedVersionedContractByHash = new sdk.StoredVersionedContractByHash(
         contractHash,

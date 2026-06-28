@@ -125,10 +125,32 @@ export function createFacilitatorSettlementReader(
       }
 
       // x402 with no hash: call facilitator to submit transfer_from on-chain.
+      // Decode the stored PAYMENT-SIGNATURE base64 JWT to get the full x402 payload.
+      const headerValue = decision.signedHeaderValue;
+      if (!headerValue) {
+        return {
+          status: 'failed',
+          source: 'facilitator',
+          evidence: { reason: 'no_signed_header_value' },
+          errorCode: 'facilitator_no_header',
+        };
+      }
+      let x402Payload: Record<string, unknown>;
+      try {
+        x402Payload = JSON.parse(Buffer.from(headerValue, 'base64').toString('utf8')) as Record<string, unknown>;
+      } catch {
+        return {
+          status: 'failed',
+          source: 'facilitator',
+          evidence: { reason: 'header_decode_failed' },
+          errorCode: 'facilitator_no_header',
+        };
+      }
+      // requirements come from the accepted entry in the x402 payload
+      const accepted = (x402Payload.accepted ?? {}) as Record<string, unknown>;
       let result: Awaited<ReturnType<CasperFacilitator['settle']>>;
       try {
-        const intent = decision.intent as Record<string, unknown>;
-        result = await facilitator.settle({ payload: intent, requirements: intent });
+        result = await facilitator.settle({ payload: x402Payload, requirements: accepted });
       } catch (err: unknown) {
         const reason = err instanceof Error ? err.message : String(err);
         return {
