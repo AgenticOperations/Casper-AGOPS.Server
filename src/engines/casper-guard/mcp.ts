@@ -170,7 +170,8 @@ const TOOL_DESCRIPTORS = [
       'Policy enforcement always runs on Casper; the transaction itself executes on the network in the intent.',
       'MAINNET IS BLOCKED — only casper:casper-test, evm:sepolia, and evm:base-sepolia are accepted.',
       'Field names use snake_case (e.g. deploy_kind, resource_id, from_asset) — camelCase is rejected.',
-      'For casper-deploy: after ALLOW, sign the deploy locally and broadcast it, then call casper_guard_reconcile with the tx_hash.',
+      'For casper-deploy: the operator broadcasts the deploy on behalf of the agent — call casper_guard_reconcile with the decision_id after ALLOW.',
+      'For evm-transfer: broadcast from your own wallet first, then call casper_guard_reconcile with the tx_hash.',
       'For cspr-trade: call casper_guard_reconcile without tx_hash — settlement is read from chain.',
     ].join(' '),
     inputSchema: {
@@ -205,7 +206,8 @@ const TOOL_DESCRIPTORS = [
     name: 'casper_guard_reconcile',
     description: [
       'Record settlement for an ALLOW decision and anchor the proof to the Casper GuardRegistry.',
-      'casper-deploy / evm-transfer: broadcast from your own wallet FIRST, then call with tx_hash.',
+      'casper-deploy: call with decision_id only — the operator broadcast the deploy; settlement is resolved server-side.',
+      'evm-transfer: broadcast from your own wallet FIRST, then call with tx_hash.',
       'x402-payment / cspr-trade: call WITHOUT tx_hash — the platform reads settlement from chain.',
     ].join(' '),
     inputSchema: {
@@ -243,6 +245,19 @@ const TOOL_DESCRIPTORS = [
         },
       },
       required: ['resource_id'],
+    },
+  },
+  {
+    name: 'casper_guard_list_services',
+    description: [
+      'List all available paid x402 services and their endpoints.',
+      'Call this first to discover which services exist, their URLs, resource IDs, and prices before calling casper_guard_authorize_payment.',
+      'The x402 flow: (1) call this tool to find the service URL, (2) hit the service endpoint WITHOUT a payment header — it will return HTTP 402 with a payment_required body, (3) pass that payment_required body to casper_guard_authorize_payment to get the PAYMENT-SIGNATURE, (4) retry the service endpoint with the PAYMENT-SIGNATURE header.',
+    ].join(' '),
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      required: [],
     },
   },
 ] as const;
@@ -288,35 +303,45 @@ export function registerCasperGuardMcpRoute(app: FastifyInstance): void {
       return reply.code(200).send(rpcError(rpc.id, -32000, 'casper_guard_signer_not_configured'));
     }
 
-    switch (call.data.name) {
-      case 'casper_guard_authorize_payment':
-        return reply
-          .code(200)
-          .send(rpcToolResult(rpc.id, await authorizePaymentTool(app, deps!, request.headers.authorization, call.data.arguments)));
-      case 'casper_guard_authorize_action':
-        return reply
-          .code(200)
-          .send(rpcToolResult(rpc.id, await authorizeActionTool(app, deps!, request.headers.authorization, call.data.arguments)));
-      case 'casper_guard_decision_status':
-        return reply
-          .code(200)
-          .send(rpcToolResult(rpc.id, await decisionStatusTool(app, request.headers.authorization, call.data.arguments)));
-      case 'casper_guard_audit_export':
-        return reply
-          .code(200)
-          .send(rpcToolResult(rpc.id, await auditExportTool(app, request.headers.authorization, call.data.arguments)));
-      case 'casper_guard_policy_check':
-        return reply.code(200).send(rpcToolResult(rpc.id, await policyCheckTool(app, deps, request.headers.authorization, call.data.arguments)));
-      case 'casper_guard_reconcile':
-        return reply
-          .code(200)
-          .send(rpcToolResult(rpc.id, await reconcileTool(app, deps!, request.headers.authorization, call.data.arguments)));
-      case 'casper_guard_legal_context':
-        return reply
-          .code(200)
-          .send(rpcToolResult(rpc.id, await legalContextTool(call.data.arguments)));
-      default:
-        return reply.code(200).send(rpcError(rpc.id, -32602, 'unknown_tool'));
+    try {
+      switch (call.data.name) {
+        case 'casper_guard_authorize_payment':
+          return reply
+            .code(200)
+            .send(rpcToolResult(rpc.id, await authorizePaymentTool(app, deps!, request.headers.authorization, call.data.arguments)));
+        case 'casper_guard_authorize_action':
+          return reply
+            .code(200)
+            .send(rpcToolResult(rpc.id, await authorizeActionTool(app, deps!, request.headers.authorization, call.data.arguments)));
+        case 'casper_guard_decision_status':
+          return reply
+            .code(200)
+            .send(rpcToolResult(rpc.id, await decisionStatusTool(app, request.headers.authorization, call.data.arguments)));
+        case 'casper_guard_audit_export':
+          return reply
+            .code(200)
+            .send(rpcToolResult(rpc.id, await auditExportTool(app, request.headers.authorization, call.data.arguments)));
+        case 'casper_guard_policy_check':
+          return reply.code(200).send(rpcToolResult(rpc.id, await policyCheckTool(app, deps, request.headers.authorization, call.data.arguments)));
+        case 'casper_guard_reconcile':
+          return reply
+            .code(200)
+            .send(rpcToolResult(rpc.id, await reconcileTool(app, deps!, request.headers.authorization, call.data.arguments)));
+        case 'casper_guard_legal_context':
+          return reply
+            .code(200)
+            .send(rpcToolResult(rpc.id, await legalContextTool(call.data.arguments)));
+        case 'casper_guard_list_services':
+          return reply
+            .code(200)
+            .send(rpcToolResult(rpc.id, listServicesTool()));
+        default:
+          return reply.code(200).send(rpcError(rpc.id, -32602, 'unknown_tool'));
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      app.log.error({ tool: call.data.name, err }, 'mcp tool handler threw');
+      return reply.code(200).send(rpcToolResult(rpc.id, { ok: false, error: message }));
     }
   });
 }
@@ -368,12 +393,16 @@ async function authorizeActionTool(
   if (result.outcome === 'DENY') {
     return { outcome: 'DENY', decision_id: result.decisionId, reason: result.reason, signature_required: false };
   }
+  const userBroadcastRequired = intent.kind === 'evm-transfer';
   return {
     outcome: 'ALLOW',
     decision_id: result.decisionId,
     hold_id: result.holdId,
     signed_header_hash: result.signedHeaderHash,
-    signature_required: true,
+    ...(userBroadcastRequired ? { signature_required: true } : {}),
+    next_step: userBroadcastRequired
+      ? 'Broadcast the transaction from your own wallet, then call casper_guard_reconcile with the tx_hash.'
+      : 'Call casper_guard_reconcile with the decision_id — the operator will handle execution.',
   };
 }
 
@@ -454,12 +483,13 @@ async function reconcileTool(
   if (!decision) throw new Error('casper_guard_decision_not_found');
   if (decision.agentId !== auth.agentId) throw new Error('casper_guard_decision_agent_mismatch');
 
-  // User-signed settlement path — covers casper-deploy (native CSPR) and evm-transfer (ETH/ERC-20).
+  // User-signed settlement path — covers evm-transfer (ETH/ERC-20) only.
   // The user broadcast the tx from their own wallet and passes the tx_hash here.
+  // casper-deploy is operator-executed: falls through to the normal FSM settlement reader path.
   // Platform role: record the hash, release the hold, anchor the decision proof to Casper.
   if (
     decision.outcome === 'ALLOW' &&
-    (decision.actionKind === 'casper-deploy' || decision.actionKind === 'evm-transfer') &&
+    decision.actionKind === 'evm-transfer' &&
     (decision.status === 'RESERVED' || decision.status === 'SIGNED') &&
     userTxHash
   ) {
@@ -492,10 +522,11 @@ async function reconcileTool(
     };
   }
 
-  // If the user did not provide tx_hash but the decision needs one, tell them explicitly.
+  // evm-transfer requires the user to broadcast from their wallet and pass back the tx_hash.
+  // casper-deploy is operator-executed — no user broadcast needed; falls through to normal settlement path.
   if (
     decision.outcome === 'ALLOW' &&
-    (decision.actionKind === 'casper-deploy' || decision.actionKind === 'evm-transfer') &&
+    decision.actionKind === 'evm-transfer' &&
     (decision.status === 'RESERVED' || decision.status === 'SIGNED') &&
     !userTxHash
   ) {
@@ -505,7 +536,7 @@ async function reconcileTool(
       settled: false,
       anchored: false,
       tx_hash: null,
-      message: `Broadcast the transaction from your own wallet first, then call casper_guard_reconcile again with tx_hash set to the transaction hash you received.`,
+      message: `Broadcast the EVM transaction from your own wallet first, then call casper_guard_reconcile again with tx_hash set to the transaction hash you received.`,
     };
   }
 
@@ -555,6 +586,63 @@ async function readTenantDecision(
   const decision = await readCasperGuardDecision(app.deps.pg, decisionId);
   if (!decision || decision.orgId !== orgId) throw new Error('decision_not_found');
   return decision;
+}
+
+function listServicesTool() {
+  return {
+    network: 'casper:casper-test',
+    payment_header: 'PAYMENT-SIGNATURE',
+    payment_flow: [
+      '1. Call casper_guard_list_services (this tool) to find the service URL and resource_id.',
+      '2. Hit the service endpoint WITHOUT any payment header — it returns HTTP 402 with a payment_required body.',
+      '3. Pass that payment_required body to casper_guard_authorize_payment to get the signed PAYMENT-SIGNATURE header.',
+      '4. Retry the service endpoint with the header: { "payment-signature": "<value>" } and optionally { "x-guard-decision-id": "<decision_id>" }.',
+    ],
+    services: [
+      {
+        name: 'Order Book Depth',
+        resource_id: 'svc:order-book',
+        method: 'GET',
+        url: 'http://localhost:4001/order-book/depth',
+        query_params: [{ name: 'pair', description: 'Trading pair, e.g. CSPR-USDT', required: false, default: 'CSPR-USDT' }],
+        price_cspr: 2,
+        price_motes: '2000000000',
+        description: 'Returns live order book depth (bids/asks) for a CSPR trading pair, including mid price, spread, and 24h volume.',
+      },
+      {
+        name: 'Risk Oracle Score',
+        resource_id: 'svc:risk-oracle',
+        method: 'POST',
+        url: 'http://localhost:4001/risk-oracle/score',
+        body_schema: {
+          pair: { type: 'string', description: 'Trading pair, e.g. CSPR-USDT', required: true },
+          side: { type: 'string', enum: ['buy', 'sell'], required: true },
+          size_motes: { type: 'string', description: 'Order size in motes (positive integer string)', required: true },
+        },
+        price_cspr: 3,
+        price_motes: '3000000000',
+        description: 'Scores the market risk of a proposed trade. Returns risk_score (0-100), label (low/medium/high), max_safe_size_motes, and reason.',
+      },
+      {
+        name: 'Trade Log Publish',
+        resource_id: 'svc:trade-log-publish',
+        method: 'POST',
+        url: 'http://localhost:4001/trade-log/publish',
+        price_cspr: 1,
+        price_motes: '1000000000',
+        description: 'Publish a trade execution record to the shared trade log.',
+      },
+      {
+        name: 'Trade Log Read',
+        resource_id: 'svc:trade-log-read',
+        method: 'GET',
+        url: 'http://localhost:4001/trade-log/trades',
+        price_cspr: 0,
+        price_motes: '0',
+        description: 'Read recent trades from the shared trade log. Free — no payment required.',
+      },
+    ],
+  };
 }
 
 async function legalContextTool(args: Record<string, unknown>) {

@@ -12,8 +12,11 @@ import {
 import type { CasperGuardDeps } from '../engines/casper-guard/routes.js';
 import {
   createCasperRpcSettlementReader,
+  createFacilitatorSettlementReader,
   createLiveDeployReader,
+  type DeployReader,
 } from '../lib/casper/settlement-reader.js';
+import { buildHttpCasperFacilitator } from '../lib/casper/facilitator.js';
 import {
   createLiveCasperDeploySubmitter,
   createOdraGuardRegistryAnchorer,
@@ -34,9 +37,11 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
   const signer = buildSigner(env);
   const odraConfigured =
     env.CASPER_GUARD_ODRA_PACKAGE_HASH !== '' && env.CASPER_GUARD_ODRA_RPC_URL !== '';
+  const serviceDestinations = parseServiceDestinations(env.CASPER_GUARD_SERVICE_DESTINATIONS);
   return {
     ...(signer ? { signer } : {}),
     networks: parseNetworks(env.CASPER_GUARD_NETWORKS),
+    ...(serviceDestinations ? { serviceDestinations } : {}),
     mcpUrl: env.CASPER_GUARD_MCP_URL,
     liveSettlement:
       env.CASPER_GUARD_FACILITATOR_RPC_URL !== ''
@@ -44,10 +49,19 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
         : { configured: false, reason: 'casper_facilitator_not_configured' },
     ...(env.CASPER_GUARD_FACILITATOR_RPC_URL !== ''
       ? {
-          settlementReaderFactory: () =>
-            createCasperRpcSettlementReader(
-              createLiveDeployReader({ rpcUrl: env.CASPER_GUARD_FACILITATOR_RPC_URL }),
-            ),
+          settlementReaderFactory: () => {
+            const deployReader = createLiveDeployReader({ rpcUrl: env.CASPER_GUARD_FACILITATOR_RPC_URL });
+            // When the hosted facilitator URL is configured, use it to submit transfer_from on-chain.
+            // Falls back to passive RPC polling when only the node URL is set (backwards compat).
+            if (env.CASPER_GUARD_FACILITATOR_URL !== '') {
+              return createFacilitatorSettlementReaderFromConfig(
+                env.CASPER_GUARD_FACILITATOR_URL,
+                env.CSPR_CLOUD_ACCESS_TOKEN,
+                deployReader,
+              );
+            }
+            return createCasperRpcSettlementReader(deployReader);
+          },
         }
       : {}),
     odra: odraConfigured
@@ -72,22 +86,29 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
       maxSlippageBps: env.CSPR_TRADE_MAX_SLIPPAGE_BPS,
       allowedRiskLabels: parseCsv(env.CSPR_TRADE_ALLOWED_RISK_LABELS),
     },
-    // Prefer LiveCsprTradeClient (real mcp.cspr.trade flow: get_quote → build_swap → sign → submit)
+    // Prefer LiveCsprTradeClient (pricing/policy data from mainnet pools; execution is testnet via agent's own wallet)
     // when CSPR_TRADE_MCP_URL and CASPER_GUARD_SENDER_PUBLIC_KEY are configured.
     // Falls back to UnavailableCsprTradeClient when either is absent (honest-blocked, never a fake fill).
-    tradeExecutor: createCsprTradeExecutor({
-      policy: {
-        maxSlippageBps: env.CSPR_TRADE_MAX_SLIPPAGE_BPS,
-        allowedRiskLabels: parseCsv(env.CSPR_TRADE_ALLOWED_RISK_LABELS),
-      },
-      client: createLiveCsprTradeClient({
-        mcpUrl: env.CSPR_TRADE_MCP_URL !== '' ? env.CSPR_TRADE_MCP_URL : undefined,
-        senderPublicKey:
-          env.CASPER_GUARD_SENDER_PUBLIC_KEY !== '' ? env.CASPER_GUARD_SENDER_PUBLIC_KEY : undefined,
-        pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH !== '' ? env.CASPER_GUARD_SIGNER_PEM_PATH : undefined,
-        algorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
-      }),
-    }),
+    tradeExecutor: (() => {
+      const tradeAvailable =
+        env.CSPR_TRADE_MCP_URL !== '' &&
+        env.CASPER_GUARD_SENDER_PUBLIC_KEY !== '' &&
+        env.CASPER_GUARD_SIGNER_PEM_PATH !== '';
+      const executor = createCsprTradeExecutor({
+        policy: {
+          maxSlippageBps: env.CSPR_TRADE_MAX_SLIPPAGE_BPS,
+          allowedRiskLabels: parseCsv(env.CSPR_TRADE_ALLOWED_RISK_LABELS),
+        },
+        client: createLiveCsprTradeClient({
+          mcpUrl: env.CSPR_TRADE_MCP_URL !== '' ? env.CSPR_TRADE_MCP_URL : undefined,
+          senderPublicKey:
+            env.CASPER_GUARD_SENDER_PUBLIC_KEY !== '' ? env.CASPER_GUARD_SENDER_PUBLIC_KEY : undefined,
+          pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH !== '' ? env.CASPER_GUARD_SIGNER_PEM_PATH : undefined,
+          algorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
+        }),
+      });
+      return { available: tradeAvailable, ...executor };
+    })(),
   };
 }
 
@@ -159,6 +180,42 @@ function paymentRequiredFromIntent(intent: Extract<CasperGuardIntent, { kind: 'x
       },
     ],
   };
+}
+
+/**
+ * Synchronous wrapper that creates a facilitator settlement reader.
+ * buildCasperFacilitator is async (dynamic import), so we return a reader whose read()
+ * lazily resolves the facilitator on first call and caches it.
+ */
+function createFacilitatorSettlementReaderFromConfig(
+  facilitatorUrl: string,
+  accessToken: string,
+  deployReader: DeployReader,
+): import('../engines/casper-guard/reconcile-worker.js').CasperGuardSettlementReader {
+  const facilitator = buildHttpCasperFacilitator({ facilitatorUrl, accessToken });
+  return {
+    async read(decision) {
+      if (!facilitator) {
+        return createCasperRpcSettlementReader(deployReader).read(decision);
+      }
+      return createFacilitatorSettlementReader(facilitator, deployReader).read(decision);
+    },
+  };
+}
+
+function parseServiceDestinations(value: string): Record<string, string> | null {
+  if (value.trim() === '') return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const result: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === 'string' && v.length > 0) result[k] = v;
+    }
+    return Object.keys(result).length > 0 ? result : null;
+  } catch {
+    return null;
+  }
 }
 
 function parseNetworks(value: string): CasperGuardNetwork[] {

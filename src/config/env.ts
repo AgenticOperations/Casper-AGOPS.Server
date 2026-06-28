@@ -50,6 +50,7 @@ const EnvSchema = z.object({
   CASPER_GUARD_MCP_URL: z.string().min(1).default('/v1/casper-guard/mcp'),
   CASPER_GUARD_FACILITATOR_RPC_URL: z.string().url().or(z.literal('')).default(''),
   CASPER_GUARD_FACILITATOR_URL: z.string().url().or(z.literal('')).default(''),
+  CSPR_CLOUD_ACCESS_TOKEN: z.string().default(''),
   CASPER_GUARD_ODRA_PACKAGE_HASH: z
     .string()
     .regex(/^[0-9a-fA-F]{64}$/)
@@ -73,6 +74,11 @@ const EnvSchema = z.object({
   // Casper public key (hex, 66 chars with 01/02 prefix) for the sender_public_key field in build_swap.
   // Typically the same public key as the Guard signer PEM. Required for LiveCsprTradeClient.
   CASPER_GUARD_SENDER_PUBLIC_KEY: z.string().default(''),
+  // JSON-encoded map of resourceId → expected payTo address for x402-payment destination binding.
+  // Example: '{"svc:casper-paid-api":"00abc...def","svc:other":"00111...222"}'
+  // When a resourceId appears here, authorize_payment rejects any intent whose payTo does not match.
+  // Leave empty to skip destination binding (fail-open, backwards-compatible default).
+  CASPER_GUARD_SERVICE_DESTINATIONS: z.string().default(''),
 
 
   // Hot-path signer keys. DEFAULTS ARE WELL-KNOWN PUBLIC ANVIL TEST KEYS — NOT SECRETS, demo/dev only.
