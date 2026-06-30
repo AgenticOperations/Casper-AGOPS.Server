@@ -228,9 +228,15 @@ export type AuthorizeDecision =
 export interface DecisionTelemetry {
   paymentId: string;
   agentId: AgentId;
+  /** Human-readable agent name, if known at emit time. Omitted when unnamed. */
+  agentName?: string;
   orgId: OrgId;
-  outcome: 'ALLOW' | 'DENY' | 'DUPLICATE';
+  outcome: 'ALLOW' | 'DENY' | 'DUPLICATE' | 'SETTLED' | 'FAILED_TERMINAL' | 'EXPIRED';
   reason?: DenyReason;
+  /** Hold disposition for outcomes that had a fund hold (ALLOW that later failed/expired). */
+  holdStatus?: 'RESERVED' | 'SETTLED' | 'RELEASED';
+  /** On-chain tx/deploy hash, present when outcome=SETTLED. */
+  txHash?: string;
   railScheme: string;
   railChain: string;
   resourceId: string;

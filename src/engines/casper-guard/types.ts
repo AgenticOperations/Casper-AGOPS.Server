@@ -29,7 +29,7 @@ export type CasperGuardIntent =
       toAsset: CasperGuardAsset;
       minReceived: string;
       slippageBps: number;
-      routeId: string;
+      routeId?: string;
       riskLabel?: string;
     }
   | {
@@ -143,7 +143,7 @@ const csprTradeIntentInput = z
     to_asset: assetInput,
     min_received: positiveIntegerString,
     slippage_bps: z.number().int().min(0).max(10_000),
-    route_id: z.string().trim().min(1),
+    route_id: z.string().trim().min(1).optional(),
     risk_label: z.string().trim().min(1).optional(),
   })
   .transform(
@@ -156,7 +156,7 @@ const csprTradeIntentInput = z
       toAsset: intent.to_asset,
       minReceived: intent.min_received,
       slippageBps: intent.slippage_bps,
-      routeId: intent.route_id,
+      routeId: intent.route_id ?? 'auto',
       ...(intent.risk_label ? { riskLabel: intent.risk_label } : {}),
     }),
   );
@@ -249,7 +249,7 @@ export function casperGuardIntentDestination(intent: CasperGuardIntent): string 
     case 'x402-payment':
       return intent.destination;
     case 'cspr-trade':
-      return intent.routeId;
+      return intent.routeId ?? null;
     case 'casper-deploy':
       return intent.target;
     case 'evm-transfer':

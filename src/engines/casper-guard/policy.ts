@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type pg from 'pg';
 import type { Redis } from 'ioredis';
-import { releaseHold, reserveHoldWithinPolicy } from '../ledger/window.js';
+import { releaseHold, reserveHoldWithinPolicy, windowSum, snapshotWindows } from '../ledger/window.js';
 import { keys } from '../../redis/keyspace.js';
 import type {
   CasperGuardActionKind,
@@ -100,7 +100,7 @@ export type CasperGuardAuthorizeResult =
       txHash?: string | null;
       deployHash?: string | null;
     }
-  | { outcome: 'DENY'; decisionId: string; reason: CasperGuardDenyReason };
+  | { outcome: 'DENY'; decisionId: string; reason: CasperGuardDenyReason; detail?: string };
 
 export async function authorizeCasperGuardIntent(
   deps: CasperGuardPolicyDeps,
@@ -160,7 +160,8 @@ export async function authorizeCasperGuardIntent(
     if (reserve === 'cap_exceeded' || reserve === 'velocity_exceeded') {
       const reason = reserve === 'cap_exceeded' ? 'spend_cap_exceeded' : 'velocity_exceeded';
       await persistDeny(deps.pool, params, reason);
-      return { outcome: 'DENY', decisionId: params.decisionId, reason };
+      const detail = await buildDenyDetail(deps.redis, params, reason);
+      return { outcome: 'DENY', decisionId: params.decisionId, reason, ...(detail ? { detail } : {}) };
     }
     if (reserve === 'duplicate') {
       return {
@@ -527,4 +528,31 @@ async function failReservedDecision(
   ]);
   const rejected = results.find((result) => result.status === 'rejected');
   if (rejected?.status === 'rejected') throw rejected.reason;
+}
+
+/** Build a human-readable detail string for spend_cap_exceeded / velocity_exceeded denials. */
+async function buildDenyDetail(
+  redis: Redis,
+  params: { agentId: string; now: number; policy: CasperGuardPolicy; intent: CasperGuardIntent },
+  reason: 'spend_cap_exceeded' | 'velocity_exceeded',
+): Promise<string | null> {
+  try {
+    const snapshot = snapshotWindows(params.now);
+    if (reason === 'spend_cap_exceeded') {
+      const used = await windowSum(redis, params.agentId, '30d', snapshot['30d']);
+      const cap = BigInt(params.policy.spendCap);
+      const requested = BigInt(params.intent.amount);
+      const motesToCspr = (m: bigint) => (Number(m) / 1_000_000_000).toFixed(4);
+      return `Spend cap is ${motesToCspr(cap)} CSPR. Already used ${motesToCspr(used)} CSPR in the current 30-day window. Requested ${motesToCspr(requested)} CSPR would exceed the cap by ${motesToCspr(used + requested - cap)} CSPR.`;
+    }
+    if (reason === 'velocity_exceeded') {
+      const usedThisHour = await windowSum(redis, params.agentId, '1h', snapshot['1h']);
+      const limit = params.policy.velocityLimitPerHour;
+      const motesToCspr = (m: bigint) => (Number(m) / 1_000_000_000).toFixed(4);
+      return `Velocity limit is ${limit} payments per hour. ${motesToCspr(usedThisHour)} CSPR already spent this hour — limit reached.`;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }

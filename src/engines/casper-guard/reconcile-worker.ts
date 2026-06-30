@@ -4,6 +4,8 @@ import type { Redis } from 'ioredis';
 import { settleHold } from '../ledger/window.js';
 import { newCasperGuardAnchorId } from '../../lib/ids.js';
 import { resolveCasperGuardTerminalFailure } from './policy.js';
+import { emitDecisionSafe } from '../monitoring/telemetry.js';
+import type { CasperGuardActionKind } from './types.js';
 import {
   appendCasperGuardReconciliationAttempt,
   claimCasperGuardAuditAnchor,
@@ -133,6 +135,18 @@ export async function reconcileCasperGuardDecision(
       });
       const refreshed = await readCasperGuardDecision(deps.pool, decision.decisionId);
       if (!refreshed) throw new Error('casper_guard_decision_not_found_after_expire');
+      void emitDecisionSafe(deps.redis, {
+        paymentId: decision.decisionId,
+        agentId: decision.agentId,
+        orgId: decision.orgId,
+        outcome: 'EXPIRED',
+        ...(refreshed.hold?.status ? { holdStatus: refreshed.hold.status } : {}),
+        railScheme: railForAction(decision.actionKind),
+        railChain: decision.network,
+        resourceId: decision.resourceId,
+        amount: decision.amount,
+        ts: Date.now(),
+      });
       return resultFromCurrentDecision(deps, refreshed);
     }
     case 'failed': {
@@ -143,6 +157,18 @@ export async function reconcileCasperGuardDecision(
       });
       const refreshed = await readCasperGuardDecision(deps.pool, decision.decisionId);
       if (!refreshed) throw new Error('casper_guard_decision_not_found_after_fail');
+      void emitDecisionSafe(deps.redis, {
+        paymentId: decision.decisionId,
+        agentId: decision.agentId,
+        orgId: decision.orgId,
+        outcome: 'FAILED_TERMINAL',
+        ...(refreshed.hold?.status ? { holdStatus: refreshed.hold.status } : {}),
+        railScheme: railForAction(decision.actionKind),
+        railChain: decision.network,
+        resourceId: decision.resourceId,
+        amount: decision.amount,
+        ts: Date.now(),
+      });
       return resultFromCurrentDecision(deps, refreshed);
     }
   }
@@ -191,6 +217,20 @@ async function settleSignedDecision(
     settleHold(deps.redis, decision.agentId, decision.decisionId),
     settleCasperGuardHold(deps.pool, decision.decisionId),
   ]);
+  const txHash = observed.txHash ?? observed.deployHash ?? undefined;
+  void emitDecisionSafe(deps.redis, {
+    paymentId: decision.decisionId,
+    agentId: decision.agentId,
+    orgId: decision.orgId,
+    outcome: 'SETTLED',
+    holdStatus: 'SETTLED',
+    ...(txHash ? { txHash } : {}),
+    railScheme: railForAction(decision.actionKind),
+    railChain: decision.network,
+    resourceId: decision.resourceId,
+    amount: decision.amount,
+    ts: Date.now(),
+  });
   return true;
 }
 
@@ -303,4 +343,13 @@ function stabilize(value: unknown): unknown {
 
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && 'code' in err && (err as { code?: unknown }).code === '23505';
+}
+
+function railForAction(action: CasperGuardActionKind): string {
+  switch (action) {
+    case 'x402-payment': return 'casper-x402';
+    case 'cspr-trade': return 'cspr-trade';
+    case 'casper-deploy': return 'casper-deploy';
+    case 'evm-transfer': return 'evm-transfer';
+  }
 }

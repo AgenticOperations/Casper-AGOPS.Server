@@ -25,7 +25,10 @@ export interface DecisionEntry extends DecisionTelemetry {
 export async function emitDecisionSafe(redis: Redis, t: DecisionTelemetry): Promise<void> {
   try {
     const fields: string[] = ['payment_id', t.paymentId, 'agent_id', t.agentId, 'outcome', t.outcome];
+    if (t.agentName) fields.push('agent_name', t.agentName);
     if (t.reason) fields.push('reason', t.reason);
+    if (t.holdStatus) fields.push('hold_status', t.holdStatus);
+    if (t.txHash) fields.push('tx_hash', t.txHash);
     fields.push(
       'rail_scheme',
       t.railScheme,
@@ -49,13 +52,19 @@ export function entryFrom(id: string, orgId: string, fields: string[]): Decision
   for (let i = 0; i + 1 < fields.length; i += 2) m.set(fields[i] as string, fields[i + 1] as string);
   const outcome = (m.get('outcome') ?? 'DENY') as DecisionTelemetry['outcome'];
   const reason = m.get('reason');
+  const agentName = m.get('agent_name');
+  const holdStatus = m.get('hold_status') as DecisionTelemetry['holdStatus'] | undefined;
+  const txHash = m.get('tx_hash');
   return {
     id,
     paymentId: m.get('payment_id') ?? '',
     agentId: m.get('agent_id') ?? '',
+    ...(agentName ? { agentName } : {}),
     orgId,
     outcome,
     ...(reason ? { reason: reason as DenyReason } : {}),
+    ...(holdStatus ? { holdStatus } : {}),
+    ...(txHash ? { txHash } : {}),
     railScheme: m.get('rail_scheme') ?? '',
     railChain: m.get('rail_chain') ?? '',
     resourceId: m.get('resource_id') ?? '',

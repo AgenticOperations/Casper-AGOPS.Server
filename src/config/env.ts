@@ -74,6 +74,11 @@ const EnvSchema = z.object({
   // Casper public key (hex, 66 chars with 01/02 prefix) for the sender_public_key field in build_swap.
   // Typically the same public key as the Guard signer PEM. Required for LiveCsprTradeClient.
   CASPER_GUARD_SENDER_PUBLIC_KEY: z.string().default(''),
+  // Ed25519 key used exclusively for CSPR.trade build_swap (MCP only accepts 01-prefix Ed25519 keys).
+  // When set, overrides CASPER_GUARD_SENDER_PUBLIC_KEY / CASPER_GUARD_SIGNER_PEM_PATH for trade signing.
+  CSPR_TRADE_SENDER_PUBLIC_KEY: z.string().default(''),
+  CSPR_TRADE_SIGNER_PEM_PATH: z.string().default(''),
+  CSPR_TRADE_SIGNER_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('ed25519'),
   // JSON-encoded map of resourceId → expected payTo address for x402-payment destination binding.
   // Example: '{"svc:casper-paid-api":"00abc...def","svc:other":"00111...222"}'
   // When a resourceId appears here, authorize_payment rejects any intent whose payTo does not match.

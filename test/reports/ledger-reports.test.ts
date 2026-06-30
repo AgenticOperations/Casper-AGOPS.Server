@@ -43,9 +43,11 @@ describe('Group C ledger reads (Docker-gated)', () => {
     expect(s.totals.audit_count).toBe(3); // 2 settled + 1 denied, all in window
     expect(typeof s.totals.settled_count).toBe('number'); // counts are numbers (::int)
     expect(typeof s.totals.settled_amount).toBe('string'); // money is a string (::text)
-    expect(s.by_agent.find((r) => r.agent_id === ctx.agentId)?.amount).toBe('8000000');
-    expect(s.by_service.find((r) => r.resource_id === 'svc:weather')?.amount).toBe('8000000');
-    expect(s.by_rail[0]).toMatchObject({ rail_scheme: 'raw-x402', rail_chain: 'arc', amount: '8000000' });
+    const agentLine = s.lines.find((r) => r.agent_id === ctx.agentId);
+    expect(agentLine?.amount).toBe('8000000');
+    const svcLine = s.lines.find((r) => r.resource_id === 'svc:weather');
+    expect(svcLine?.amount).toBe('8000000');
+    expect(s.lines[0]).toMatchObject({ rail_scheme: 'raw-x402', rail_chain: 'arc', amount: '8000000' });
   });
 
   it('readAuditLog returns immutable rows oldest-first, money strings, nullable settlement, LIMIT, org-fenced', async ({ skip }) => {

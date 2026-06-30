@@ -227,10 +227,17 @@ export class LiveCsprTradeClient implements CsprTradeClient {
   }
 
   async quote(intent: CsprTradeIntent): Promise<CsprTradeQuote> {
-    // Pair format: "CSPR/USDT" → tokenIn = "CSPR", tokenOut = "USDT"
+    // Pair format: "CSPR/sCSPR" → tokenIn = "CSPR", tokenOut = "sCSPR"
+    // Valid tokens on Casper testnet: CSPR, sCSPR. USDT/USDC do NOT exist — reject early.
     const [tokenIn, tokenOut] = intent.pair.split('/').map((s) => s.trim());
     if (!tokenIn || !tokenOut) {
       throw new Error(`cspr_trade_invalid_pair: expected "TOKEN_A/TOKEN_B", got "${intent.pair}"`);
+    }
+    const KNOWN_INVALID = ['USDT', 'USDC', 'DAI', 'ETH', 'BTC'];
+    for (const t of [tokenIn, tokenOut]) {
+      if (KNOWN_INVALID.includes(t.toUpperCase())) {
+        throw new Error(`cspr_trade_invalid_token: "${t}" does not exist on Casper testnet. Valid tokens: CSPR, sCSPR.`);
+      }
     }
 
     // Fetch real AMM quote. estimate_slippage returns plain-text on this MCP server, so call

@@ -54,9 +54,9 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
             const deployReader = createLiveDeployReader({ rpcUrl: env.CASPER_GUARD_FACILITATOR_RPC_URL });
             const tradeClient = createLiveCsprTradeClient({
               mcpUrl: env.CSPR_TRADE_MCP_URL !== '' ? env.CSPR_TRADE_MCP_URL : undefined,
-              senderPublicKey: env.CASPER_GUARD_SENDER_PUBLIC_KEY !== '' ? env.CASPER_GUARD_SENDER_PUBLIC_KEY : undefined,
-              pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH !== '' ? env.CASPER_GUARD_SIGNER_PEM_PATH : undefined,
-              algorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
+              senderPublicKey: (env.CSPR_TRADE_SENDER_PUBLIC_KEY || env.CASPER_GUARD_SENDER_PUBLIC_KEY) || undefined,
+              pemPath: (env.CSPR_TRADE_SIGNER_PEM_PATH || env.CASPER_GUARD_SIGNER_PEM_PATH) || undefined,
+              algorithm: env.CSPR_TRADE_SIGNER_PEM_PATH !== '' ? env.CSPR_TRADE_SIGNER_ALGORITHM : env.CASPER_GUARD_SIGNER_ALGORITHM,
             });
             const csprTradeReader = createCsprTradeSettlementReader(tradeClient, deployReader);
             // When the hosted facilitator URL is configured, use it to submit transfer_from on-chain.
@@ -103,15 +103,14 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
     // LiveCsprTradeClient: real mcp.cspr.trade quote + sign + submit (MCP SSE session now handled).
     // Falls back to UnavailableCsprTradeClient when required config is absent.
     tradeExecutor: (() => {
-      const tradeAvailable =
-        env.CSPR_TRADE_MCP_URL !== '' &&
-        env.CASPER_GUARD_SENDER_PUBLIC_KEY !== '' &&
-        env.CASPER_GUARD_SIGNER_PEM_PATH !== '';
+      const tradePubKey = env.CSPR_TRADE_SENDER_PUBLIC_KEY || env.CASPER_GUARD_SENDER_PUBLIC_KEY;
+      const tradePemPath = env.CSPR_TRADE_SIGNER_PEM_PATH || env.CASPER_GUARD_SIGNER_PEM_PATH;
+      const tradeAvailable = env.CSPR_TRADE_MCP_URL !== '' && tradePubKey !== '' && tradePemPath !== '';
       const client = createLiveCsprTradeClient({
             mcpUrl: env.CSPR_TRADE_MCP_URL !== '' ? env.CSPR_TRADE_MCP_URL : undefined,
-            senderPublicKey: env.CASPER_GUARD_SENDER_PUBLIC_KEY !== '' ? env.CASPER_GUARD_SENDER_PUBLIC_KEY : undefined,
-            pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH !== '' ? env.CASPER_GUARD_SIGNER_PEM_PATH : undefined,
-            algorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
+            senderPublicKey: tradePubKey || undefined,
+            pemPath: tradePemPath || undefined,
+            algorithm: env.CSPR_TRADE_SIGNER_PEM_PATH !== '' ? env.CSPR_TRADE_SIGNER_ALGORITHM : env.CASPER_GUARD_SIGNER_ALGORITHM,
           });
       const executor = createCsprTradeExecutor({
         policy: {

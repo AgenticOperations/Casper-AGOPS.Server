@@ -23,6 +23,7 @@ import {
 } from './reconcile-worker.js';
 import { composeSettlementReader } from '../../lib/casper/settlement-reader.js';
 import { settleHold } from '../ledger/window.js';
+import { emitDecisionSafe } from '../monitoring/telemetry.js';
 import { CASPER_X402_HEADER_NAME } from '../../lib/casper/x402.js';
 
 const rpcSchema = z.object({
@@ -105,7 +106,7 @@ const INTENT_SCHEMA = {
     {
       type: 'object',
       title: 'cspr-trade',
-      description: 'CSPR.trade DEX swap. Fetch quote/slippage from CSPR.trade to get route_id and risk_label, then submit here. Use resource_id "cspr.trade:swap". If the user\'s request requires fetching data (e.g. prices, quotes, risk scores) before executing, fetch that data first and present it before submitting this intent.',
+      description: 'CSPR.trade DEX swap on Casper testnet. Valid tokens: CSPR and sCSPR (wrapped CSPR). USDT does NOT exist on Casper testnet — never use it. Provide from_asset, to_asset, amount, min_received, and slippage_bps — the server fetches the real quote internally. Use resource_id "cspr.trade:swap". route_id is optional (server derives it).',
       properties: {
         kind: { type: 'string', enum: ['cspr-trade'] },
         network: { type: 'string', enum: ['casper:casper-test'], description: 'Must be "casper:casper-test" — mainnet is not permitted.' },
@@ -115,10 +116,10 @@ const INTENT_SCHEMA = {
         to_asset: { ...ASSET_SCHEMA, description: 'Asset being bought.' },
         min_received: { type: 'string', pattern: '^[1-9][0-9]*$', description: 'Minimum to_asset amount to accept (in smallest unit). Prevents slippage above tolerance.' },
         slippage_bps: { type: 'integer', minimum: 0, maximum: 10000, description: 'Slippage tolerance in basis points (100 = 1%). Must be ≤ policy maxSlippageBps.' },
-        route_id: { type: 'string', minLength: 1, description: 'Route identifier from CSPR.trade get_quote / estimate_slippage response.' },
+        route_id: { type: 'string', minLength: 1, description: 'Route identifier from CSPR.trade get_quote response. Optional — the server re-derives it from the token pair; omit if you do not have a quote.' },
         risk_label: { type: 'string', description: 'Risk label from CSPR.trade quote ("low", "medium", "high"). Required for policy trade_risk check.' },
       },
-      required: ['kind', 'network', 'resource_id', 'amount', 'from_asset', 'to_asset', 'min_received', 'slippage_bps', 'route_id'],
+      required: ['kind', 'network', 'resource_id', 'amount', 'from_asset', 'to_asset', 'min_received', 'slippage_bps'],
     },
     {
       type: 'object',
@@ -387,7 +388,7 @@ async function authorizePaymentTool(
     intent,
   });
   if (result.outcome === 'DENY') {
-    return { outcome: 'DENY', decision_id: result.decisionId, reason: result.reason, signature_required: false };
+    return { outcome: 'DENY', decision_id: result.decisionId, reason: result.reason, signature_required: false, ...(result.detail ? { detail: result.detail } : {}) };
   }
   const headerValue = result.headers?.[CASPER_X402_HEADER_NAME];
   if (!headerValue) throw new Error('casper_payment_header_unavailable');
@@ -421,7 +422,7 @@ async function authorizeActionTool(
     intent,
   });
   if (result.outcome === 'DENY') {
-    return { outcome: 'DENY', decision_id: result.decisionId, reason: result.reason, signature_required: false };
+    return { outcome: 'DENY', decision_id: result.decisionId, reason: result.reason, signature_required: false, ...(result.detail ? { detail: result.detail } : {}) };
   }
   const userBroadcastRequired = intent.kind === 'evm-transfer';
   return {
@@ -555,6 +556,20 @@ async function reconcileTool(
       }
     }
 
+    void emitDecisionSafe(app.deps.redis, {
+      paymentId: decisionId,
+      agentId: decision.agentId,
+      orgId: decision.orgId,
+      outcome: 'SETTLED',
+      holdStatus: 'SETTLED',
+      txHash: userTxHash,
+      railScheme: decision.actionKind,
+      railChain: decision.network,
+      resourceId: decision.resourceId,
+      amount: decision.amount,
+      ts: Date.now(),
+    });
+
     return {
       decision_id: decisionId,
       status: 'SETTLED',
@@ -648,10 +663,10 @@ function listServicesTool() {
         resource_id: 'svc:order-book',
         method: 'GET',
         url: 'http://localhost:4001/order-book/depth',
-        query_params: [{ name: 'pair', description: 'Trading pair, e.g. CSPR-USDT', required: false, default: 'CSPR-USDT' }],
+        query_params: [{ name: 'pair', description: 'Trading pair on Casper testnet, e.g. CSPR-USDC. NOTE: USDT does not exist on Casper testnet — use USDC or CSPR.', required: false, default: 'CSPR-USDC' }],
         price_cspr: 2,
         price_motes: '2000000000',
-        description: 'Returns live order book depth (bids/asks) for a CSPR trading pair, including mid price, spread, and 24h volume.',
+        description: 'Returns live order book depth (bids/asks) for a CSPR trading pair, including mid price, spread, and 24h volume. Available pairs: CSPR-USDC. Do NOT use USDT — it is not deployed on Casper testnet.',
       },
       {
         name: 'Risk Oracle Score',
@@ -659,13 +674,13 @@ function listServicesTool() {
         method: 'POST',
         url: 'http://localhost:4001/risk-oracle/score',
         body_schema: {
-          pair: { type: 'string', description: 'Trading pair, e.g. CSPR-USDT', required: true },
+          pair: { type: 'string', description: 'Trading pair on Casper testnet, e.g. CSPR-USDC. Do NOT use USDT — it is not deployed on Casper testnet.', required: true },
           side: { type: 'string', enum: ['buy', 'sell'], required: true },
           size_motes: { type: 'string', description: 'Order size in motes (positive integer string)', required: true },
         },
         price_cspr: 3,
         price_motes: '3000000000',
-        description: 'Scores the market risk of a proposed trade. Returns risk_score (0-100), label (low/medium/high), max_safe_size_motes, and reason.',
+        description: 'Scores the market risk of a proposed trade. Returns risk_score (0-100), label (low/medium/high), max_safe_size_motes, and reason. Use pair CSPR-USDC (not CSPR-USDT).',
       },
       {
         name: 'Trade Log Publish',
