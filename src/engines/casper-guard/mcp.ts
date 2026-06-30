@@ -178,15 +178,16 @@ const TOOL_DESCRIPTORS = [
   {
     name: 'casper_guard_authorize_action',
     description: [
-      'Authorize a CSPR.trade DEX swap, Casper deploy, or EVM transfer intent.',
-      'DO NOT use this for HTTP service calls — use casper_guard_authorize_payment for any paid service endpoint.',
-      'This tool is only for on-chain actions: CSPR.trade DEX swaps (cspr-trade), Casper contract deploys (casper-deploy), and EVM transfers (evm-transfer).',
-      'If the user\'s request involves fetching data from a service before taking an action, complete those data fetches first via casper_guard_authorize_payment, then use this tool for the action.',
-      'Policy enforcement always runs on Casper; the transaction itself executes on the network in the intent.',
+      'Authorize a CSPR.trade DEX swap (cspr-trade), Casper on-chain deploy (casper-deploy), or EVM transfer (evm-transfer).',
+      'NEVER use this for HTTP service calls (order book, risk oracle, trade log) — those use casper_guard_authorize_payment.',
+      'NEVER use casper-deploy with resource_id starting with "svc:" or "cspr.trade:" — Guard will deny with action_kind_resource_mismatch.',
+      'casper-deploy is ONLY for resource_id "casper:deploy:guard-registry" (on-chain contract calls).',
+      'cspr-trade is for DEX swaps with resource_id "cspr.trade:swap".',
+      'evm-transfer is for EVM chain transfers with evm:sepolia or evm:base-sepolia network.',
       'MAINNET IS BLOCKED — only casper:casper-test, evm:sepolia, and evm:base-sepolia are accepted.',
       'Field names use snake_case (e.g. deploy_kind, resource_id, from_asset) — camelCase is rejected.',
-      'For casper-deploy: the operator broadcasts the deploy on behalf of the agent — call casper_guard_reconcile with the decision_id after ALLOW.',
-      'For evm-transfer: broadcast from your own wallet first, then call casper_guard_reconcile with the tx_hash.',
+      'For casper-deploy: call casper_guard_reconcile with decision_id after ALLOW — operator broadcasts.',
+      'For evm-transfer: broadcast from your own wallet first, then call casper_guard_reconcile with tx_hash.',
       'For cspr-trade: call casper_guard_reconcile without tx_hash — settlement is read from chain.',
     ].join(' '),
     inputSchema: {
@@ -483,6 +484,20 @@ async function policyCheckTool(
   }
   if (!serviceScope.includes(intent.resourceId)) {
     return { outcome: 'DENY', reason: 'service_not_allowed', agent_id: auth.agentId, policy_id: policy.policyId, allowed_resource_ids: serviceScope };
+  }
+
+  // Mirror the policy engine's action_kind_resource_mismatch check so dry-run catches it too.
+  if (intent.kind === 'casper-deploy') {
+    const r = intent.resourceId;
+    if (r.startsWith('svc:') || r.startsWith('cspr.trade:')) {
+      return {
+        outcome: 'DENY',
+        reason: 'action_kind_resource_mismatch',
+        hint: 'svc:* and cspr.trade:* resource IDs require x402-payment or cspr-trade, not casper-deploy. Use casper_guard_authorize_payment for service calls.',
+        agent_id: auth.agentId,
+        policy_id: policy.policyId,
+      };
+    }
   }
 
   return {

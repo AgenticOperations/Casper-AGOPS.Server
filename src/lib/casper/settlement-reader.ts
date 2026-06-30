@@ -5,6 +5,7 @@ import type {
 import type { CasperGuardDecisionRecord } from '../../engines/casper-guard/store.js';
 import type { CasperFacilitator } from './facilitator.js';
 import type { CsprTradeClient, CsprTradeIntent } from './cspr-trade.js';
+import { decodeCasperX402PaymentHeader } from './x402.js';
 
 /** On-chain finality for a single deploy/tx, normalized away from RPC wire shapes. */
 export interface DeployFinality {
@@ -136,9 +137,12 @@ export function createFacilitatorSettlementReader(
           errorCode: 'facilitator_no_header',
         };
       }
-      let x402Payload: Record<string, unknown>;
+      // Decode the Casper x402 PAYMENT-SIGNATURE header using the correct x402 decoder.
+      // The header is a structured JWT-style token produced by @make-software/casper-x402,
+      // NOT a raw base64(JSON) blob — Buffer.from(value, 'base64') would always throw here.
+      let x402Payload: ReturnType<typeof decodeCasperX402PaymentHeader>;
       try {
-        x402Payload = JSON.parse(Buffer.from(headerValue, 'base64').toString('utf8')) as Record<string, unknown>;
+        x402Payload = decodeCasperX402PaymentHeader(headerValue);
       } catch {
         return {
           status: 'failed',
@@ -147,13 +151,16 @@ export function createFacilitatorSettlementReader(
           errorCode: 'facilitator_no_header',
         };
       }
-      // requirements come from the accepted entry in the x402 payload
-      const accepted = (x402Payload.accepted ?? {}) as Record<string, unknown>;
+      // `accepted` is the single PaymentRequirements object the client committed to (not an array).
+      const accepted = x402Payload.accepted;
       let result: Awaited<ReturnType<CasperFacilitator['settle']>>;
       try {
+        console.log('[facilitator-reader] calling settle, decisionId:', decision.decisionId, 'network:', (accepted as Record<string, unknown>)?.network, 'amount:', (accepted as Record<string, unknown>)?.amount);
         result = await facilitator.settle({ payload: x402Payload, requirements: accepted });
+        console.log('[facilitator-reader] settle result:', JSON.stringify(result));
       } catch (err: unknown) {
         const reason = err instanceof Error ? err.message : String(err);
+        console.error('[facilitator-reader] settle threw:', reason);
         return {
           status: 'failed',
           source: 'facilitator',
@@ -163,6 +170,7 @@ export function createFacilitatorSettlementReader(
       }
 
       if (!result.success) {
+        console.error('[facilitator-reader] facilitator returned failure:', result.reason);
         return {
           status: 'failed',
           source: 'facilitator',

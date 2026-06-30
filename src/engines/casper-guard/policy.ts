@@ -33,6 +33,7 @@ export type CasperGuardDenyReason =
   | 'idempotency_in_progress'
   | 'idempotency_conflict'
   | 'x402_asset_not_supported'
+  | 'action_kind_resource_mismatch'
   | 'legal_acceptance_required'
   | 'legal_context_fetch_failed'
   | 'legal_terms_hash_mismatch';
@@ -292,6 +293,17 @@ async function evaluateCasperGuardPolicy(
   }
   if (!params.policy.serviceScope.includes(params.intent.resourceId)) {
     return { allow: false, reason: 'service_not_allowed' };
+  }
+
+  // Prevent action_kind/resource_id mismatches that would always dead-end at the settlement layer.
+  // svc:* resource IDs are x402 HTTP services — they must use x402-payment, never casper-deploy.
+  // cspr.trade:* resource IDs are DEX swap routes — they must use cspr-trade, never casper-deploy.
+  // A casper-deploy to these resources produces an EXPIRY_CHECK loop with no deploy ever submitted.
+  if (params.intent.kind === 'casper-deploy') {
+    const r = params.intent.resourceId;
+    if (r.startsWith('svc:') || r.startsWith('cspr.trade:')) {
+      return { allow: false, reason: 'action_kind_resource_mismatch' };
+    }
   }
 
   // Destination binding: when the policy registers an authoritative payTo for this resourceId,

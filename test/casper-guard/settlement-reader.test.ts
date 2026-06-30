@@ -80,8 +80,14 @@ function makeFacilitator(result: Awaited<ReturnType<CasperFacilitator['settle']>
   };
 }
 
-// Valid base64-encoded x402 payload the facilitator reader expects when settling.
-const fakeHeader = Buffer.from(JSON.stringify({ accepted: { scheme: 'exact' } })).toString('base64');
+// Valid base64url-encoded x402 PaymentPayload — matches the format produced by @make-software/casper-x402
+// and decoded by decodeCasperX402PaymentHeader → decodePaymentSignatureHeader from @x402/core/http.
+const fakeHeader = Buffer.from(JSON.stringify({
+  x402Version: 1,
+  accepted: { scheme: 'exact', network: 'casper:casper-test', amount: '2000000000' },
+  payload: {},
+  extensions: {},
+})).toString('base64url');
 
 // Decision with no deploy hash (needs facilitator settlement)
 const unsettledDecision = baseDecision({ deployHash: null, txHash: null, signedHeaderValue: fakeHeader } as never);

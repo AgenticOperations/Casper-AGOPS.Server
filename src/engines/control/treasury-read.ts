@@ -44,7 +44,7 @@ export async function getTreasuryBalances(deps: TreasuryReadDeps, orgId: string)
 }
 
 export interface AgentFloatRow {
-  id: string; status: string;
+  id: string; name: string; status: string;
   float_pending: string; float_confirmed: string;
   consumed: string; reserved: string; spendable: string;
 }
@@ -56,8 +56,8 @@ export interface AgentFloatRow {
  * exercise multi-escrow holds; post-MVP must aggregate the agent's open escrow reserves before display.
  */
 export async function listAgentsWithFloats(pool: pg.Pool, redis: Redis, orgId: string): Promise<AgentFloatRow[]> {
-  const res = await pool.query<{ id: string; status: string }>(
-    'SELECT id, status FROM agents WHERE org_id = $1 ORDER BY created_at ASC',
+  const res = await pool.query<{ id: string; name: string; status: string }>(
+    'SELECT id, name, status FROM agents WHERE org_id = $1 ORDER BY created_at ASC',
     [orgId],
   );
   const rows: AgentFloatRow[] = [];
@@ -73,7 +73,7 @@ export async function listAgentsWithFloats(pool: pg.Pool, redis: Redis, orgId: s
     const reserved = BigInt(r ?? '0');
     const spendable = computeSpendable({ floatConfirmed, consumed, reserved, escrowReserved: 0n });
     rows.push({
-      id: a.id, status: a.status,
+      id: a.id, name: a.name, status: a.status,
       float_pending: BigInt(fp ?? '0').toString(),
       float_confirmed: floatConfirmed.toString(),
       consumed: consumed.toString(),
