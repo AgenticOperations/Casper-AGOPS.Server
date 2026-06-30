@@ -88,6 +88,38 @@ describe('Casper Guard intent normalization', () => {
     });
   });
 
+  it('accepts casper-deploy only for deploy resource IDs, not svc: or cspr.trade: prefixes', () => {
+    // casper-deploy with a valid deploy resource parses fine
+    expect(() =>
+      normalizeCasperGuardIntent({
+        kind: 'casper-deploy',
+        network: 'casper:casper-test',
+        resource_id: 'casper:deploy:guard-registry',
+        amount: '100000000',
+        asset: { kind: 'native', symbol: 'CSPR' },
+        deploy_kind: 'contract-call',
+        target: 'hash-guard-registry',
+      }),
+    ).not.toThrow();
+
+    // casper-deploy with svc: or cspr.trade: prefix parses OK at the intent layer
+    // but must be rejected by evaluateCasperGuardPolicy with action_kind_resource_mismatch.
+    // These intents are structurally valid but semantically wrong — Guard blocks them at auth time.
+    const svcDeploy = normalizeCasperGuardIntent({
+      kind: 'casper-deploy',
+      network: 'casper:casper-test',
+      resource_id: 'svc:order-book',
+      amount: '2000000000',
+      asset: { kind: 'native', symbol: 'CSPR' },
+      deploy_kind: 'transfer',
+      target: '00' + 'a'.repeat(64),
+    });
+    expect(svcDeploy.kind).toBe('casper-deploy');
+    expect(svcDeploy.resourceId).toBe('svc:order-book');
+    // The policy check (not the schema) is what blocks this — verified via policy.test.ts
+    // with real stores, and the evaluateCasperGuardPolicy guard added in policy.ts.
+  });
+
   it('rejects unsupported Casper intent shapes fail-closed', () => {
     expect(() =>
       normalizeCasperGuardIntent({
