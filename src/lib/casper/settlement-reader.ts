@@ -4,6 +4,7 @@ import type {
 } from '../../engines/casper-guard/reconcile-worker.js';
 import type { CasperGuardDecisionRecord } from '../../engines/casper-guard/store.js';
 import type { CasperFacilitator } from './facilitator.js';
+import type { CsprTradeClient, CsprTradeIntent } from './cspr-trade.js';
 
 /** On-chain finality for a single deploy/tx, normalized away from RPC wire shapes. */
 export interface DeployFinality {
@@ -178,6 +179,90 @@ export function createFacilitatorSettlementReader(
         evidence: { facilitator_tx: result.txHash },
         deployHash: result.txHash ?? null,
         txHash: result.txHash ?? null,
+      };
+    },
+  };
+}
+
+/**
+ * Settlement reader for cspr-trade decisions.
+ *
+ * When no deploy hash is present, calls CsprTradeClient.submit() to execute the swap on-chain
+ * and returns the resulting deploy hash as settled. Subsequent reconcile calls (hash already set)
+ * delegate to the RPC reader to confirm finality.
+ */
+export function createCsprTradeSettlementReader(
+  client: CsprTradeClient,
+  deployReader: DeployReader,
+): CasperGuardSettlementReader {
+  const rpcReader = createCasperRpcSettlementReader(deployReader);
+  return {
+    async read(decision: CasperGuardDecisionRecord): Promise<CasperGuardSettlementRead> {
+      // Already has a hash — swap was submitted, poll RPC for finality.
+      if (decision.deployHash ?? decision.txHash) {
+        return rpcReader.read(decision);
+      }
+      // Only handle cspr-trade; fall through to RPC for anything else.
+      if (decision.actionKind !== 'cspr-trade') {
+        return rpcReader.read(decision);
+      }
+
+      // Extract trade intent stored on the decision to reconstruct the pair/amount.
+      // Guard stores the raw intent object with from_asset/to_asset/route_id fields.
+      const intentRecord = decision.intent as {
+        trade_pair?: string;
+        pair?: string;
+        route_id?: string;
+        from_asset?: { symbol?: string; name?: string };
+        to_asset?: { symbol?: string; name?: string };
+        amount?: string;
+      } | null;
+      // Prefer explicit pair fields; fall back to from_asset/to_asset symbols; then route_id.
+      let pair: string;
+      if (intentRecord?.trade_pair) {
+        pair = intentRecord.trade_pair;
+      } else if (intentRecord?.pair) {
+        pair = intentRecord.pair;
+      } else if (intentRecord?.from_asset && intentRecord?.to_asset) {
+        const from = intentRecord.from_asset.symbol ?? intentRecord.from_asset.name ?? 'CSPR';
+        const to = intentRecord.to_asset.symbol ?? intentRecord.to_asset.name ?? 'sCSPR';
+        pair = `${from}/${to}`;
+      } else if (intentRecord?.route_id) {
+        // route_id format: "CSPR-sCSPR" → "CSPR/sCSPR"
+        pair = intentRecord.route_id.replace('-', '/');
+      } else {
+        pair = 'CSPR/sCSPR';
+      }
+      const amount = intentRecord?.amount ?? decision.amount;
+      const tradeIntent: CsprTradeIntent = { pair, amount };
+
+      let txHash: string;
+      let deployHash: string | undefined;
+      try {
+        console.log('[cspr-trade-reader] calling quote with', JSON.stringify(tradeIntent));
+        const quote = await client.quote(tradeIntent);
+        console.log('[cspr-trade-reader] quote result:', JSON.stringify(quote));
+        const submitted = await client.submit({ quoteId: quote.quoteId });
+        console.log('[cspr-trade-reader] submit result:', JSON.stringify(submitted));
+        txHash = submitted.txHash;
+        deployHash = submitted.deployHash;
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        console.error('[cspr-trade-reader] quote/submit error:', reason);
+        return {
+          status: 'failed',
+          source: 'operator-wallet',
+          evidence: { reason },
+          errorCode: 'cspr_trade_submit_failed',
+        };
+      }
+
+      return {
+        status: 'settled',
+        source: 'operator-wallet',
+        evidence: { tx: txHash },
+        txHash,
+        deployHash: deployHash ?? txHash,
       };
     },
   };

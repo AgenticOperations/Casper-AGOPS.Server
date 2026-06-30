@@ -105,7 +105,7 @@ const INTENT_SCHEMA = {
     {
       type: 'object',
       title: 'cspr-trade',
-      description: 'CSPR.trade DEX swap. Fetch quote/slippage from CSPR.trade first, then submit here. Use resource_id "cspr.trade:swap".',
+      description: 'CSPR.trade DEX swap. Fetch quote/slippage from CSPR.trade to get route_id and risk_label, then submit here. Use resource_id "cspr.trade:swap". If the user\'s request requires fetching data (e.g. prices, quotes, risk scores) before executing, fetch that data first and present it before submitting this intent.',
       properties: {
         kind: { type: 'string', enum: ['cspr-trade'] },
         network: { type: 'string', enum: ['casper:casper-test'], description: 'Must be "casper:casper-test" — mainnet is not permitted.' },
@@ -152,13 +152,25 @@ const TOOL_DESCRIPTORS = [
   },
   {
     name: 'casper_guard_authorize_payment',
-    description: 'Authorize Casper x402 payment requirements and return PAYMENT-SIGNATURE on ALLOW.',
+    description: [
+      'Authorize a Casper x402 HTTP payment for any paid service endpoint and return the ready-to-use PAYMENT-SIGNATURE header on ALLOW.',
+      'Use this whenever you need to call a paid HTTP service (any resource_id listed by casper_guard_list_services).',
+      'Do NOT use casper_guard_authorize_action for HTTP service calls — that tool is only for on-chain actions (DEX swaps, deploys, EVM transfers).',
+      'REQUIRED: pass the raw payment_required body returned by the HTTP 402 response exactly as-is — do not reconstruct or modify it.',
+      'The 402 body already contains the correct asset, payTo address, and amount; do not guess or invent these values.',
+      'On ALLOW, the response includes payment_header: { name, value }.',
+      'Use payment_header.value verbatim as the PAYMENT-SIGNATURE HTTP header when retrying the endpoint.',
+      'Also include x-guard-decision-id: decision_id in the retry request.',
+      'signed_header_hash_audit_only is for audit trail only — do NOT use it as a header value.',
+      'No PEM key or wallet signing is needed — the server handles all cryptography.',
+      'Flow: (1) hit endpoint without headers → get HTTP 402 + payment_required body, (2) call this tool with that body, (3) retry endpoint with { "PAYMENT-SIGNATURE": payment_header.value, "x-guard-decision-id": decision_id }.',
+    ].join(' '),
     inputSchema: {
       type: 'object',
       properties: {
         agent_id: { type: 'string' },
         idempotency_key: { type: 'string', minLength: 8, maxLength: 160 },
-        payment_required: { type: 'object' },
+        payment_required: { type: 'object', description: 'The raw payment_required object from the HTTP 402 response body. Pass it as-is — do not modify.' },
       },
       required: ['agent_id', 'idempotency_key', 'payment_required'],
     },
@@ -166,7 +178,10 @@ const TOOL_DESCRIPTORS = [
   {
     name: 'casper_guard_authorize_action',
     description: [
-      'Authorize a CSPR.trade swap, Casper deploy, or EVM transfer intent.',
+      'Authorize a CSPR.trade DEX swap, Casper deploy, or EVM transfer intent.',
+      'DO NOT use this for HTTP service calls — use casper_guard_authorize_payment for any paid service endpoint.',
+      'This tool is only for on-chain actions: CSPR.trade DEX swaps (cspr-trade), Casper contract deploys (casper-deploy), and EVM transfers (evm-transfer).',
+      'If the user\'s request involves fetching data from a service before taking an action, complete those data fetches first via casper_guard_authorize_payment, then use this tool for the action.',
       'Policy enforcement always runs on Casper; the transaction itself executes on the network in the intent.',
       'MAINNET IS BLOCKED — only casper:casper-test, evm:sepolia, and evm:base-sepolia are accepted.',
       'Field names use snake_case (e.g. deploy_kind, resource_id, from_asset) — camelCase is rejected.',
@@ -250,9 +265,18 @@ const TOOL_DESCRIPTORS = [
   {
     name: 'casper_guard_list_services',
     description: [
-      'List all available paid x402 services and their endpoints.',
-      'Call this first to discover which services exist, their URLs, resource IDs, and prices before calling casper_guard_authorize_payment.',
-      'The x402 flow: (1) call this tool to find the service URL, (2) hit the service endpoint WITHOUT a payment header — it will return HTTP 402 with a payment_required body, (3) pass that payment_required body to casper_guard_authorize_payment to get the PAYMENT-SIGNATURE, (4) retry the service endpoint with the PAYMENT-SIGNATURE header.',
+      'List all available paid x402 services and their endpoints, including their URLs, resource IDs, prices, and what data they return.',
+      'Call this tool FIRST whenever the user asks for any data or capability that might come from a service — even if they use informal language.',
+      'Available services include: order book depth (bids/asks, mid price, spread, volume), risk oracle score (risk score 0-100, risk label, max safe size), trade log publishing, and trade log reading.',
+      'If the user mentions "order book", "bids", "asks", "depth", "price", "spread", "risk score", "risk label", "safe size", "trade log", or any similar concept — call this tool first to find the matching service before doing anything else.',
+      'After calling this tool you will know the exact URL and resource_id to use in the x402 payment flow.',
+      'The complete x402 service-call flow:',
+      '(1) Call this tool to find the service URL and resource_id.',
+      '(2) Hit the service endpoint WITHOUT any headers — it returns HTTP 402 with a payment_required body.',
+      '(3) Pass that exact payment_required body (unmodified) to casper_guard_authorize_payment.',
+      '(4) On ALLOW, use payment_header.value as the PAYMENT-SIGNATURE header and decision_id as x-guard-decision-id.',
+      '(5) Retry the endpoint with those two headers — the server returns the data.',
+      'No PEM key or manual signing required. The server handles all cryptography.',
     ].join(' '),
     inputSchema: {
       type: 'object',
@@ -370,8 +394,13 @@ async function authorizePaymentTool(
     outcome: 'ALLOW',
     decision_id: result.decisionId,
     hold_id: result.holdId,
+    // Use payment_header.value verbatim as the PAYMENT-SIGNATURE HTTP header.
+    // Use decision_id as the x-guard-decision-id HTTP header.
+    // No additional signing needed — the server already signed this.
     payment_header: { name: CASPER_X402_HEADER_NAME, value: headerValue },
-    signed_header_hash: result.signedHeaderHash,
+    // AUDIT ONLY — do not use this as a header value.
+    signed_header_hash_audit_only: result.signedHeaderHash,
+    _instructions: 'Retry the service endpoint with headers: { "PAYMENT-SIGNATURE": payment_header.value, "x-guard-decision-id": decision_id }. No PEM key or additional signing required.',
   };
 }
 

@@ -12,6 +12,7 @@ import {
 import type { CasperGuardDeps } from '../engines/casper-guard/routes.js';
 import {
   createCasperRpcSettlementReader,
+  createCsprTradeSettlementReader,
   createFacilitatorSettlementReader,
   createLiveDeployReader,
   type DeployReader,
@@ -51,16 +52,29 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
       ? {
           settlementReaderFactory: () => {
             const deployReader = createLiveDeployReader({ rpcUrl: env.CASPER_GUARD_FACILITATOR_RPC_URL });
+            const tradeClient = createLiveCsprTradeClient({
+              mcpUrl: env.CSPR_TRADE_MCP_URL !== '' ? env.CSPR_TRADE_MCP_URL : undefined,
+              senderPublicKey: env.CASPER_GUARD_SENDER_PUBLIC_KEY !== '' ? env.CASPER_GUARD_SENDER_PUBLIC_KEY : undefined,
+              pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH !== '' ? env.CASPER_GUARD_SIGNER_PEM_PATH : undefined,
+              algorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
+            });
+            const csprTradeReader = createCsprTradeSettlementReader(tradeClient, deployReader);
             // When the hosted facilitator URL is configured, use it to submit transfer_from on-chain.
             // Falls back to passive RPC polling when only the node URL is set (backwards compat).
-            if (env.CASPER_GUARD_FACILITATOR_URL !== '') {
-              return createFacilitatorSettlementReaderFromConfig(
-                env.CASPER_GUARD_FACILITATOR_URL,
-                env.CSPR_CLOUD_ACCESS_TOKEN,
-                deployReader,
-              );
-            }
-            return createCasperRpcSettlementReader(deployReader);
+            const baseReader = env.CASPER_GUARD_FACILITATOR_URL !== ''
+              ? createFacilitatorSettlementReaderFromConfig(
+                  env.CASPER_GUARD_FACILITATOR_URL,
+                  env.CSPR_CLOUD_ACCESS_TOKEN,
+                  deployReader,
+                )
+              : createCasperRpcSettlementReader(deployReader);
+            // Route cspr-trade decisions through the trade client; all others through facilitator/RPC.
+            return {
+              read(decision) {
+                if (decision.actionKind === 'cspr-trade') return csprTradeReader.read(decision);
+                return baseReader.read(decision);
+              },
+            };
           },
         }
       : {}),
@@ -86,26 +100,25 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
       maxSlippageBps: env.CSPR_TRADE_MAX_SLIPPAGE_BPS,
       allowedRiskLabels: parseCsv(env.CSPR_TRADE_ALLOWED_RISK_LABELS),
     },
-    // Prefer LiveCsprTradeClient (pricing/policy data from mainnet pools; execution is testnet via agent's own wallet)
-    // when CSPR_TRADE_MCP_URL and CASPER_GUARD_SENDER_PUBLIC_KEY are configured.
-    // Falls back to UnavailableCsprTradeClient when either is absent (honest-blocked, never a fake fill).
+    // LiveCsprTradeClient: real mcp.cspr.trade quote + sign + submit (MCP SSE session now handled).
+    // Falls back to UnavailableCsprTradeClient when required config is absent.
     tradeExecutor: (() => {
       const tradeAvailable =
         env.CSPR_TRADE_MCP_URL !== '' &&
         env.CASPER_GUARD_SENDER_PUBLIC_KEY !== '' &&
         env.CASPER_GUARD_SIGNER_PEM_PATH !== '';
+      const client = createLiveCsprTradeClient({
+            mcpUrl: env.CSPR_TRADE_MCP_URL !== '' ? env.CSPR_TRADE_MCP_URL : undefined,
+            senderPublicKey: env.CASPER_GUARD_SENDER_PUBLIC_KEY !== '' ? env.CASPER_GUARD_SENDER_PUBLIC_KEY : undefined,
+            pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH !== '' ? env.CASPER_GUARD_SIGNER_PEM_PATH : undefined,
+            algorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
+          });
       const executor = createCsprTradeExecutor({
         policy: {
           maxSlippageBps: env.CSPR_TRADE_MAX_SLIPPAGE_BPS,
           allowedRiskLabels: parseCsv(env.CSPR_TRADE_ALLOWED_RISK_LABELS),
         },
-        client: createLiveCsprTradeClient({
-          mcpUrl: env.CSPR_TRADE_MCP_URL !== '' ? env.CSPR_TRADE_MCP_URL : undefined,
-          senderPublicKey:
-            env.CASPER_GUARD_SENDER_PUBLIC_KEY !== '' ? env.CASPER_GUARD_SENDER_PUBLIC_KEY : undefined,
-          pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH !== '' ? env.CASPER_GUARD_SIGNER_PEM_PATH : undefined,
-          algorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
-        }),
+        client,
       });
       return { available: tradeAvailable, ...executor };
     })(),

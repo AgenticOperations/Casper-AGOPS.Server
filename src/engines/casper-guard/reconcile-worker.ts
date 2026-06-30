@@ -87,7 +87,14 @@ export async function reconcileCasperGuardDecision(
     throw new Error('casper_guard_decision_not_reconcilable');
   }
 
-  const observed = await deps.settlementReader.read(decision);
+  let observed: CasperGuardSettlementRead;
+  try {
+    observed = await deps.settlementReader.read(decision);
+    console.log('[reconcile] settlementReader result:', JSON.stringify({ decisionId: decision.decisionId, status: observed.status, source: observed.source, evidence: observed.evidence }));
+  } catch (err) {
+    console.error('[reconcile] settlementReader.read THREW:', err instanceof Error ? err.message : String(err), err instanceof Error ? err.stack : '');
+    throw err;
+  }
   await appendReconciliationAttempt(deps.pool, {
     decisionId: decision.decisionId,
     attemptNumber: nextAttemptNumber(decision),
@@ -97,8 +104,10 @@ export async function reconcileCasperGuardDecision(
     errorCode: observed.status === 'settled' ? null : observed.errorCode ?? null,
   });
 
+  console.log('[reconcile] switching on observed.status:', observed.status);
   switch (observed.status) {
     case 'settled': {
+      console.log('[reconcile] settled — checking anchorer, deps.anchorer:', !!deps.anchorer);
       ensureAnchorerConfigured(deps);
       const settled = await settleSignedDecision(deps, decision, observed);
       const refreshed = await readCasperGuardDecision(deps.pool, decision.decisionId);
