@@ -174,7 +174,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerOAuthRoutes(app);
   // P1 Identity — agent lifecycle (create/rename/retire/rotate-key, admin+, tenant-fenced). ag_ shown once.
   registerAgentLifecycleRoutes(app);
-  // CasperHacks — Casper Guard policy/firewall/audit product surface.
+  // CasperHacks — AgentOps policy/firewall/audit product surface.
   registerCasperGuardRoutes(app);
   registerCasperGuardMcpRoute(app);
   // Demo orchestration surface (M9, doc 04 §5). Env-gated — never registered in production.

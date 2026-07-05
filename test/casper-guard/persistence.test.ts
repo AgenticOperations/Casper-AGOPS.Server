@@ -19,7 +19,7 @@ afterAll(async () => {
   await stopStores(stores);
 });
 
-describe('Casper Guard persistence', () => {
+describe('AgentOps persistence', () => {
   it('persists decisions, holds, reconciliation attempts, and Odra audit anchors', async ({
     skip,
   }) => {

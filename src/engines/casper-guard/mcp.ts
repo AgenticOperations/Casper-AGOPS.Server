@@ -141,7 +141,7 @@ const INTENT_SCHEMA = {
 const TOOL_DESCRIPTORS = [
   {
     name: 'casper_guard_policy_check',
-    description: 'Dry-run a Casper Guard intent against the agent policy without signing. Returns allowed_resource_ids and allowed_networks on DENY so the caller can correct the intent.',
+    description: 'Dry-run a AgentOps intent against the agent policy without signing. Returns allowed_resource_ids and allowed_networks on DENY so the caller can correct the intent.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -203,7 +203,7 @@ const TOOL_DESCRIPTORS = [
   },
   {
     name: 'casper_guard_decision_status',
-    description: 'Read the durable status for a Casper Guard decision.',
+    description: 'Read the durable status for a AgentOps decision.',
     inputSchema: {
       type: 'object',
       properties: { decision_id: { type: 'string' } },
@@ -212,7 +212,7 @@ const TOOL_DESCRIPTORS = [
   },
   {
     name: 'casper_guard_audit_export',
-    description: 'Export judge-verifiable audit JSON for a Casper Guard decision.',
+    description: 'Export judge-verifiable audit JSON for a AgentOps decision.',
     inputSchema: {
       type: 'object',
       properties: { decision_id: { type: 'string' } },
@@ -222,7 +222,7 @@ const TOOL_DESCRIPTORS = [
   {
     name: 'casper_guard_reconcile',
     description: [
-      'Record settlement for an ALLOW decision and anchor the proof to the Casper GuardRegistry.',
+      'Record settlement for an ALLOW decision and anchor the proof to the AgentOpsRegistry.',
       'casper-deploy: call with decision_id only — the operator broadcast the deploy; settlement is resolved server-side.',
       'evm-transfer: broadcast from your own wallet FIRST, then call with tx_hash.',
       'x402-payment / cspr-trade: call WITHOUT tx_hash — the platform reads settlement from chain.',

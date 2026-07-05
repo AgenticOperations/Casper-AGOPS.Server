@@ -26,7 +26,7 @@ export type Rail =
   | { scheme: 'raw-x402'; chain: 'arc' | 'solana' }
   | { scheme: 'circle-nano'; chain: 'arc' };
 
-/** Casper Guard hackathon rails are isolated from the canonical AgentOps Arc/Solana ledger. */
+/** AgentOps hackathon rails are isolated from the canonical AgentOps Arc/Solana ledger. */
 export type CasperGuardRail =
   | { scheme: 'casper-x402'; network: 'casper:casper-test' | 'casper:casper' }
   | { scheme: 'cspr-trade'; network: 'casper:casper-test' | 'casper:casper' }

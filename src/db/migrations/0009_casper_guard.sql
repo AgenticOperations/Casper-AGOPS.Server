@@ -1,7 +1,7 @@
 -- 0009_casper_guard — Casper-native hackathon product decision/audit store.
 --
 -- This is deliberately separate from payment_events: the existing Phase-1 ledger constrains
--- rails to Arc/Solana x402 and Circle Gateway. Casper Guard needs Casper x402, CSPR.trade, and
+-- rails to Arc/Solana x402 and Circle Gateway. AgentOps needs Casper x402, CSPR.trade, and
 -- direct deploy/action evidence without weakening those original AgentOps constraints.
 
 CREATE TABLE casper_guard_decisions (

@@ -22,7 +22,7 @@ export interface DeployReader {
 }
 
 /**
- * Reads settlement finality for a Casper Guard decision off-chain via the node RPC.
+ * Reads settlement finality for a AgentOps decision off-chain via the node RPC.
  *
  * Fail-closed: an unreadable / not-yet-finalized / not-found deploy is `pending`, never `settled`.
  * Expiry is NOT decided here — the reconcile FSM owns expiry (markCasperGuardDecisionExpiryCheck),

@@ -143,7 +143,7 @@ export function createCasperGuardRuntimeSigner(
       }
 
       const canonical = stableJson({
-        product: 'Casper Guard',
+        product: 'AgentOps',
         decisionId: input.decisionId,
         intent: input.intent,
       });
@@ -179,7 +179,7 @@ function paymentRequiredFromIntent(intent: Extract<CasperGuardIntent, { kind: 'x
   }
   return {
     x402Version: CASPER_X402_VERSION,
-    resource: { url: intent.resourceId, serviceName: 'Casper Guard' },
+    resource: { url: intent.resourceId, serviceName: 'AgentOps' },
     accepts: [
       {
         scheme: 'exact',

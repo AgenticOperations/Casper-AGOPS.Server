@@ -120,7 +120,7 @@ try {
 // ── Summary ───────────────────────────────────────────────────────────────────
 process.stdout.write('\n');
 process.stdout.write('━'.repeat(60) + '\n');
-process.stdout.write('CASPER GUARD E2E SUMMARY\n');
+process.stdout.write('AgentOps E2E SUMMARY\n');
 process.stdout.write('━'.repeat(60) + '\n');
 process.stdout.write(`  signer:           ${deps.signer ? '✅ ready' : '❌ missing'}\n`);
 process.stdout.write(`  live_settlement:  ${deps.liveSettlement?.configured ? '✅ ready' : '⏸️  blocked'}\n`);

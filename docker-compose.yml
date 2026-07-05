@@ -1,4 +1,4 @@
-# Local infra for Casper Guard backend development and integration tests.
+# Local infra for AgentOps backend development and integration tests.
 #
 # Redis runs with AOF enabled (appendfsync everysec) because NFR-02 requires the hot
 # tier to be durable: an acknowledged hold must survive a restart. SPIKE-06 calibrates

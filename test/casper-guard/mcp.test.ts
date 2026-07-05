@@ -98,8 +98,8 @@ function mcpCall(name: string, args: Record<string, unknown>) {
   return { jsonrpc: '2.0', id: crypto.randomUUID(), method: 'tools/call', params: { name, arguments: args } };
 }
 
-describe('Casper Guard MCP route', () => {
-  it('lists the agent-facing Casper Guard tools with JSON schemas', async () => {
+describe('AgentOps MCP route', () => {
+  it('lists the agent-facing AgentOps tools with JSON schemas', async () => {
     if (!app) return;
     const res = await app.inject({
       method: 'POST',

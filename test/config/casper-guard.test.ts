@@ -44,7 +44,7 @@ interface CreateHeaderInput {
   paymentRequired: PaymentRequired;
 }
 
-describe('Casper Guard runtime config', () => {
+describe('AgentOps runtime config', () => {
   it('is honest by default: no signer, settlement blocked, Odra blocked', () => {
     const env = loadEnv(BASE_ENV);
     const deps = buildCasperGuardDeps(env);
@@ -120,7 +120,7 @@ describe('Casper Guard runtime config', () => {
     const paymentRequired = firstCall[0].paymentRequired;
     expect(paymentRequired).toMatchObject({
       x402Version: 2,
-      resource: { url: 'svc:casper-paid-api', serviceName: 'Casper Guard' },
+      resource: { url: 'svc:casper-paid-api', serviceName: 'AgentOps' },
       accepts: [
         {
           scheme: 'exact',

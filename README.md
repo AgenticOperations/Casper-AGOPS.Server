@@ -1,6 +1,6 @@
-# Casper Guard — Backend
+# AgentOps — Backend
 
-Casper Guard is the CasperHacks backend: a Casper-native policy, x402 signing,
+AgentOps is the CasperHacks backend: a Casper-native policy, x402 signing,
 MCP, reconciliation, and audit layer for AI agents spending on Casper rails.
 It signs or denies every agent action, records the decision, reserves budget,
 and exposes judge-verifiable audit JSON for the operator console.
@@ -39,7 +39,7 @@ npm run migrate               # apply schema migrations
 npm run dev                   # tsx watch on src/server.ts
 ```
 
-## Casper Guard Runtime
+## AgentOps Runtime
 
 The Casper surface is wired from env at boot and fails closed when anything live is
 missing:
@@ -66,7 +66,7 @@ Client-facing endpoints:
 npm run typecheck   # strict tsc, no emit
 npm run lint        # eslint (flat config, type-checked rules)
 npm run format:check
-npm test            # Casper Guard + required core backend tests
+npm test            # AgentOps + required core backend tests
 npm run test:full-substrate  # inherited AgentOps substrate, including legacy Arc/Circle tests
 ```
 

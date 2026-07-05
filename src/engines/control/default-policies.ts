@@ -18,7 +18,7 @@ const CSPR = 1_000_000_000n; // 1 CSPR in motes (9 decimals)
  * x402 rail, and children can still narrow that list. `allowedDestinations` is the operator's Casper
  * account hash — the OWN-AGENTS allowlist that `depositFor` checks. On Casper this is an account hash
  * string (64 hex chars), not an EVM address. The owner refines all of these from the console; these
- * defaults guarantee the compiler has a valid parent layer for both source routes and Casper Guard.
+ * defaults guarantee the compiler has a valid parent layer for both source routes and AgentOps.
  */
 export async function seedDefaultOrgPolicies(
   pool: pg.Pool,

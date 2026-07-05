@@ -429,7 +429,7 @@ export async function authorizeWithStoredPolicy(
     },
   );
 
-  // Emit fail-open telemetry copy to Redis stream so the monitoring feed shows Casper Guard decisions.
+  // Emit fail-open telemetry copy to Redis stream so the monitoring feed shows AgentOps decisions.
   // Fire-and-forget (never awaited) — a telemetry failure must never block or fail an authorization.
   const telemetryBase = {
     agentId: params.agentId,
@@ -451,7 +451,7 @@ export async function authorizeWithStoredPolicy(
 
 function capabilities(deps: CasperGuardDeps | undefined) {
   return {
-    product: 'Casper Guard',
+    product: 'AgentOps',
     networks: deps?.networks ?? [CASPER_X402_TESTNET_NETWORK],
     signer: {
       mode: deps?.signer?.kind ?? 'unconfigured',

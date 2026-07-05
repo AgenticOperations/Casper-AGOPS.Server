@@ -82,7 +82,7 @@ async function seedSignedDecision(input: {
   return { agentId, orgId };
 }
 
-describe('Casper Guard reconciliation and Odra anchoring', () => {
+describe('AgentOps reconciliation and Odra anchoring', () => {
   it('settles a signed x402 decision exactly once and anchors the decision hash', async ({ skip }) => {
     if (!stores) return skip();
     const { agentId } = await seedSignedDecision({

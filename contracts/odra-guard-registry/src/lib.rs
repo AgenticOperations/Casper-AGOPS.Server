@@ -4,7 +4,7 @@ extern crate alloc;
 
 use odra::prelude::*;
 
-/// Guard registry: an append-only anchor of Casper Guard decisions.
+/// Guard registry: an append-only anchor of AgentOps decisions.
 ///
 /// Stores the decision hash (sha256:...) keyed by decision_id with a counter for audit.
 /// Anchors are immutable: re-anchoring the same id with a DIFFERENT hash reverts.

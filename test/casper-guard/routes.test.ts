@@ -155,7 +155,7 @@ function attachCasperGuardSigner(
   };
 }
 
-describe('Casper Guard HTTP routes', () => {
+describe('AgentOps HTTP routes', () => {
   it('reports capabilities and honest setup status for the client', async ({ skip }) => {
     if (!stores || !app) return skip();
     const { adminKey } = await seedAgent(stores.pool, stores.redis, 100);
@@ -171,7 +171,7 @@ describe('Casper Guard HTTP routes', () => {
     });
     expect(caps.statusCode).toBe(200);
     expect(caps.json<CasperCapabilitiesResponse>()).toMatchObject({
-      product: 'Casper Guard',
+      product: 'AgentOps',
       networks: ['casper:casper-test'],
       signer: { mode: 'local-testnet', configured: true },
       x402: { version: 2, header_name: 'PAYMENT-SIGNATURE' },
@@ -297,7 +297,7 @@ describe('Casper Guard HTTP routes', () => {
     expect(signCalls).toBe(0);
   });
 
-  it('exports judge-verifiable audit JSON for a Casper Guard decision', async ({ skip }) => {
+  it('exports judge-verifiable audit JSON for a AgentOps decision', async ({ skip }) => {
     if (!stores || !app) return skip();
     const { agentId, orgId, apiKey, adminKey } = await seedAgent(stores.pool, stores.redis, 100);
     await dialCasperPolicy({ app, agentId, adminKey });

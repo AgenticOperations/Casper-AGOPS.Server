@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeCasperGuardIntent } from '../../src/engines/casper-guard/types.js';
 
-describe('Casper Guard intent normalization', () => {
+describe('AgentOps intent normalization', () => {
   it('normalizes Casper x402, CSPR.trade, and direct Casper deploy intents', () => {
     const x402 = normalizeCasperGuardIntent({
       kind: 'x402-payment',

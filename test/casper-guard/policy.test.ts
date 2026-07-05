@@ -90,7 +90,7 @@ function csprTradeIntent(slippageBps = 50, riskLabel = 'medium') {
   });
 }
 
-describe('Casper Guard policy and hold lifecycle', () => {
+describe('AgentOps policy and hold lifecycle', () => {
   it('reserves the hold before signing an allowed intent', async ({ skip }) => {
     if (!stores) return skip();
     const { agentId, orgId } = await seedAgent(stores.pool, stores.redis, 100);

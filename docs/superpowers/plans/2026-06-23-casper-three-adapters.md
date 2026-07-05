@@ -1,4 +1,4 @@
-# Casper Guard — Three Adapters Implementation Plan
+# AgentOps — Three Adapters Implementation Plan
 
 > **For Claude:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -514,7 +514,7 @@ This is operator-compiled (toolchain `cargo-odra` is not installed on this machi
 ```rust
 use odra::prelude::*;
 
-/// Guard registry: an append-only anchor of Casper Guard decisions.
+/// Guard registry: an append-only anchor of AgentOps decisions.
 /// Stores the decision hash (sha256:...) keyed by decision_id, with a counter for audit.
 #[odra::module]
 pub struct GuardRegistry {

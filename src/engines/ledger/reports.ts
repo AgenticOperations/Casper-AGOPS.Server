@@ -5,7 +5,7 @@ import type pg from 'pg';
  * cold ledger (M3). NO write path — a correction is a new ledger row, never a mutation. Every money value
  * crosses the wire as a base-unit STRING; `numeric(78,0)` sums are cast `::text`, counts `::int`.
  *
- * Casper Guard decisions live in `casper_guard_decisions` (separate table — the Phase-1 payment_events
+ * AgentOps decisions live in `casper_guard_decisions` (separate table — the Phase-1 payment_events
  * rail_scheme CHECK constrains it to Arc/Solana rails). Statement and audit queries UNION both tables so
  * all settled spend is visible regardless of rail.
  */
@@ -51,7 +51,7 @@ export interface Statement {
 }
 
 /** Period spend statement for one org: settled totals + DENY count + per agent/service/rail breakdowns.
- *  UNIONs payment_events (Arc/Solana rails) with casper_guard_decisions (Casper Guard rails). */
+ *  UNIONs payment_events (Arc/Solana rails) with casper_guard_decisions (AgentOps rails). */
 export async function readStatement(pool: pg.Pool, orgId: string, period: ResolvedPeriod): Promise<Statement> {
   const args = [orgId, period.from, period.to];
 
@@ -125,7 +125,7 @@ export interface AuditRow {
   reason_code: string | null;
   enforcement_timestamp: string;
   settlement_timestamp: string | null;
-  /** On-chain tx or deploy hash, present for Casper Guard settled rows. */
+  /** On-chain tx or deploy hash, present for AgentOps settled rows. */
   tx_hash?: string | null;
 }
 
@@ -136,7 +136,7 @@ type RawAuditRow = Omit<AuditRow, 'enforcement_timestamp' | 'settlement_timestam
 };
 
 /** The immutable per-payment audit rows for the period, oldest first (export order).
- *  UNIONs payment_events (Arc/Solana) and casper_guard_decisions (Casper Guard). */
+ *  UNIONs payment_events (Arc/Solana) and casper_guard_decisions (AgentOps). */
 export async function readAuditLog(
   pool: pg.Pool,
   orgId: string,

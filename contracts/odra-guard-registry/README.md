@@ -1,6 +1,6 @@
 # Odra Guard Registry — build & deploy
 
-Append-only on-chain registry of Casper Guard decision anchors.  
+Append-only on-chain registry of AgentOps decision anchors.  
 Entry points: `anchor_decision(decision_id, decision_hash)`, `get_anchor(decision_id)`, `total_anchored()`.
 
 ## Prerequisites (not installed on the dev machine by default)

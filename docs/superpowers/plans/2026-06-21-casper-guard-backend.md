@@ -5,7 +5,7 @@ ecosystem: casper
 tags: [casper, hackathon, backend, x402, mcp, odra, tdd]
 ---
 
-# Casper Guard Backend Implementation Plan
+# AgentOps Backend Implementation Plan
 
 Backlinks: [[10-Projects/Web3-Builds/Hackathons/CasperHacks/HANDOFF]] | [[10-Projects/Web3-Builds/Hackathons/CasperHacks/casper-agentic-buildathon-architecture]] | [[10-Projects/Web3-Builds/Hackathons/CasperHacks/BUILD/README]]
 
@@ -13,7 +13,7 @@ Backlinks: [[10-Projects/Web3-Builds/Hackathons/CasperHacks/HANDOFF]] | [[10-Pro
 
 ## Goal
 
-Ship the complete production-grade backend for **Casper Guard**, a Casper-native AgentOps-like hackathon product built inside CasperHacks. This is not a pivot of canonical AgentOps, and this build must stay isolated from the original AgentOps project.
+Ship the complete production-grade backend for **AgentOps**, a Casper-native AgentOps-like hackathon product built inside CasperHacks. This is not a pivot of canonical AgentOps, and this build must stay isolated from the original AgentOps project.
 
 The backend must let a real client build the product UI and agent integration without mocks:
 
@@ -43,7 +43,7 @@ Implementation may use local x402 proof creation/verification immediately after 
 - Do not add AWS KMS or Nitro as hackathon requirements. The requirement is a bounded Casper signer seam with clear modes and auditability.
 - Keep Casper assets asset-neutral: CEP-18 hash and network metadata are first-class; do not hard-code USDC-only assumptions into Casper flows.
 - CSPR.trade live integration can be a seam if public testnet access is blocked, but the backend must still model governed trade intents and reconciliation honestly.
-- Odra is not custody. It anchors/verifies decisions; budget enforcement remains in Casper Guard.
+- Odra is not custody. It anchors/verifies decisions; budget enforcement remains in AgentOps.
 - Client support is part of backend completeness: capabilities, schema, setup status, and audit export endpoints must be available.
 
 ## Touch Map
@@ -92,9 +92,9 @@ Files: `src/contracts/index.ts`, `src/engines/casper-guard/types.ts`, `src/db/mi
 - [x] GREEN: add migration tables with idempotency keys, decision ids, org/agent ids, hold amount, network, action kind, status, raw requirement hash, signed header hash, tx/deploy hash, and audit-anchor reference.
 - [x] Verify: migration test, targeted domain tests, typecheck.
 
-Acceptance: Casper Guard can persist every decision and later prove what was signed, denied, settled, expired, or anchored.
+Acceptance: AgentOps can persist every decision and later prove what was signed, denied, settled, expired, or anchored.
 
-As-built L2: `src/engines/casper-guard/types.ts` normalizes x402-payment, CSPR.trade, and direct Casper deploy intents into a shared typed intent. `src/db/migrations/0009_casper_guard.sql` adds isolated Casper Guard decision, hold, reconciliation, and audit-anchor tables without weakening canonical `payment_events` rail constraints. `src/engines/casper-guard/store.ts` persists and reads those records. `src/contracts/index.ts` exports Casper Guard rail/action/asset edge types. Red run failed on missing modules; green run `npx vitest run test/casper-guard/domain.test.ts test/casper-guard/persistence.test.ts` passed 3 tests; `npm run typecheck` passed.
+As-built L2: `src/engines/casper-guard/types.ts` normalizes x402-payment, CSPR.trade, and direct Casper deploy intents into a shared typed intent. `src/db/migrations/0009_casper_guard.sql` adds isolated AgentOps decision, hold, reconciliation, and audit-anchor tables without weakening canonical `payment_events` rail constraints. `src/engines/casper-guard/store.ts` persists and reads those records. `src/contracts/index.ts` exports AgentOps rail/action/asset edge types. Red run failed on missing modules; green run `npx vitest run test/casper-guard/domain.test.ts test/casper-guard/persistence.test.ts` passed 3 tests; `npm run typecheck` passed.
 
 ## L3 - Policy and Hold Lifecycle
 
@@ -109,7 +109,7 @@ Files: `src/engines/casper-guard/policy.ts`, relevant enforcement adapters, test
 
 Acceptance: no Casper payment proof or action signature can be produced without a persisted allow decision and a budget hold.
 
-## L4 - Casper Guard HTTP APIs for Client Setup
+## L4 - AgentOps HTTP APIs for Client Setup
 
 Files: `src/engines/casper-guard/routes.ts`, `src/app.ts`, tests under `test/casper-guard/routes.test.ts`.
 
@@ -132,7 +132,7 @@ Files: `src/engines/casper-guard/mcp.ts`, route registration as needed, tests un
 - [ ] GREEN: implement minimal JSON-RPC-compatible MCP endpoint and tool descriptors.
 - [ ] Verify: MCP tests and typecheck.
 
-Acceptance: an AI agent can discover Casper Guard through MCP and call the same guarded backend path a frontend calls.
+Acceptance: an AI agent can discover AgentOps through MCP and call the same guarded backend path a frontend calls.
 
 ## L6 - Reconciliation and Audit Anchoring
 

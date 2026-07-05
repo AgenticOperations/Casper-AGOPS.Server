@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Wire `buildCasperFacilitator()` into the settlement path so that when an agent calls `casper_guard_reconcile` on an x402-payment decision, Casper Guard calls `POST https://x402-facilitator.cspr.cloud/settle` to submit the `transfer_from` on-chain and records the returned deploy hash.
+**Goal:** Wire `buildCasperFacilitator()` into the settlement path so that when an agent calls `casper_guard_reconcile` on an x402-payment decision, AgentOps calls `POST https://x402-facilitator.cspr.cloud/settle` to submit the `transfer_from` on-chain and records the returned deploy hash.
 
 **Architecture:** Three focused changes in three files. (1) Add `CASPER_GUARD_FACILITATOR_URL` env var (the hosted CSPR.cloud facilitator endpoint, separate from the Casper node RPC). (2) Add `createFacilitatorSettlementReader()` to `settlement-reader.ts` — for x402 decisions with no deploy hash yet, calls `facilitator.settle()`, gets back the deploy hash, then delegates finality polling to the existing RPC reader. (3) In `casper-guard.ts`, build the facilitator from the new env var and use it as the `settlementReaderFactory` instead of the bare RPC reader.
 
