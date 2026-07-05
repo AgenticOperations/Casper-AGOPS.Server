@@ -2,6 +2,7 @@
   "name": "casper-guard-backend",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@10.30.3",
   "description": "AgentOps — Casper-native policy, x402 signing, MCP, reconciliation, and audit backend for agentic payments.",
   "type": "module",
   "engines": {
