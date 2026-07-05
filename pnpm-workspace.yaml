@@ -1,0 +1,5 @@
+packages:
+  - '.'
+
+patchedDependencies:
+  casper-js-sdk@5.0.12: patches/casper-js-sdk@5.0.12.patch
