@@ -56,5 +56,10 @@
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.18.1",
     "vitest": "^2.1.8"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "casper-js-sdk@5.0.12": "patches/casper-js-sdk@5.0.12.patch"
+    }
   }
 }
