@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "test"]
+  "exclude": ["node_modules", "dist", "test", "node_modules/.pnpm/casper-js-sdk@5.0.12/node_modules/casper-js-sdk/dist/@types/**/*.ts"]
 }

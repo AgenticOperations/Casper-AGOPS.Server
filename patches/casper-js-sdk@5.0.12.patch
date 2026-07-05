@@ -1,0 +1,9 @@
+diff --git a/dist/@types/common.ts b/dist/@types/common.ts
+deleted file mode 100644
+index e3f7afc13ba8d228cdcb70b3f4202195188735c9..0000000000000000000000000000000000000000
+diff --git a/dist/@types/error.ts b/dist/@types/error.ts
+deleted file mode 100644
+index a0a3259a3de7929a7645116923e77b4fa0efdb65..0000000000000000000000000000000000000000
+diff --git a/dist/@types/index.ts b/dist/@types/index.ts
+deleted file mode 100644
+index 93d5473aba499199830a6b7c21ae57d6160b7366..0000000000000000000000000000000000000000

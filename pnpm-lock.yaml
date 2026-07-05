@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  casper-js-sdk@5.0.12:
+    hash: c390c59b1f1f336e4afda1d681090b393bce726cf02eaeef3a5503699b630064
+    path: patches/casper-js-sdk@5.0.12.patch
+
 importers:
 
   .:
@@ -22,7 +27,7 @@ importers:
         version: 2.15.0
       casper-js-sdk:
         specifier: 5.0.12
-        version: 5.0.12
+        version: 5.0.12(patch_hash=c390c59b1f1f336e4afda1d681090b393bce726cf02eaeef3a5503699b630064)
       fastify:
         specifier: ^5.2.0
         version: 5.8.5
@@ -2956,7 +2961,7 @@ snapshots:
     dependencies:
       '@casper-ecosystem/casper-eip-712': 1.2.1
       '@x402/core': 2.15.0
-      casper-js-sdk: 5.0.12
+      casper-js-sdk: 5.0.12(patch_hash=c390c59b1f1f336e4afda1d681090b393bce726cf02eaeef3a5503699b630064)
     transitivePeerDependencies:
       - debug
       - encoding
@@ -3705,7 +3710,7 @@ snapshots:
 
   callsites@3.1.0: {}
 
-  casper-js-sdk@5.0.12:
+  casper-js-sdk@5.0.12(patch_hash=c390c59b1f1f336e4afda1d681090b393bce726cf02eaeef3a5503699b630064):
     dependencies:
       '@ethersproject/bignumber': 5.8.0
       '@ethersproject/bytes': 5.8.0
