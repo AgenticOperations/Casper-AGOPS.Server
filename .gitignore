@@ -21,7 +21,6 @@ coverage/
 *.key
 *.keystore
 secrets/
-kms/
 .aws/
 
 # Logs
