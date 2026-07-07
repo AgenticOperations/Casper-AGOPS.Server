@@ -43,6 +43,9 @@ const EnvSchema = z.object({
     .enum(['disabled', 'local-testnet', 'operator-wallet', 'enterprise-custody'])
     .default('disabled'),
   CASPER_GUARD_SIGNER_PEM_PATH: z.string().default(''),
+  // Base64-encoded PEM content — use this on Railway/cloud instead of PEM_PATH.
+  // Set to the output of: base64 -i secret_key.pem | tr -d '\n'
+  CASPER_GUARD_SIGNER_PEM_INLINE: z.string().default(''),
   // Algorithm the local-testnet PEM was generated under. casper-client keygen defaults to ed25519;
   // a key exported from Casper Wallet / an EC PEM is secp256k1. Must match the PEM or signing is invalid.
   CASPER_GUARD_SIGNER_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('ed25519'),
@@ -78,6 +81,9 @@ const EnvSchema = z.object({
   // When set, overrides CASPER_GUARD_SENDER_PUBLIC_KEY / CASPER_GUARD_SIGNER_PEM_PATH for trade signing.
   CSPR_TRADE_SENDER_PUBLIC_KEY: z.string().default(''),
   CSPR_TRADE_SIGNER_PEM_PATH: z.string().default(''),
+  // Base64-encoded PEM — use on Railway instead of CSPR_TRADE_SIGNER_PEM_PATH.
+  // Set to: base64 -i secret_key.pem | tr -d '\n'
+  CSPR_TRADE_SIGNER_PEM_INLINE: z.string().default(''),
   CSPR_TRADE_SIGNER_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('ed25519'),
   // JSON-encoded map of resourceId → expected payTo address for x402-payment destination binding.
   // Example: '{"svc:casper-paid-api":"00abc...def","svc:other":"00111...222"}'

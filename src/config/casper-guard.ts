@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { PaymentRequired } from '@x402/core/types';
 import type { Env } from './env.js';
 import { CasperSignerProvider, type CasperSignerMode } from '../lib/casper/signer.js';
@@ -55,7 +58,7 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
             const tradeClient = createLiveCsprTradeClient({
               mcpUrl: env.CSPR_TRADE_MCP_URL !== '' ? env.CSPR_TRADE_MCP_URL : undefined,
               senderPublicKey: (env.CSPR_TRADE_SENDER_PUBLIC_KEY || env.CASPER_GUARD_SENDER_PUBLIC_KEY) || undefined,
-              pemPath: (env.CSPR_TRADE_SIGNER_PEM_PATH || env.CASPER_GUARD_SIGNER_PEM_PATH) || undefined,
+              pemPath: (resolveTradePemPath(env) || resolvePemPath(env)) || undefined,
               algorithm: env.CSPR_TRADE_SIGNER_PEM_PATH !== '' ? env.CSPR_TRADE_SIGNER_ALGORITHM : env.CASPER_GUARD_SIGNER_ALGORITHM,
             });
             const csprTradeReader = createCsprTradeSettlementReader(tradeClient, deployReader);
@@ -89,7 +92,7 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
             // SEAM: swap createLiveCasperDeploySubmitter for a real client once contract is deployed
             submitter: createLiveCasperDeploySubmitter({
               rpcUrl: env.CASPER_GUARD_ODRA_RPC_URL,
-              pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH,
+              pemPath: resolvePemPath(env) ?? '',
               algorithm: env.CASPER_GUARD_ODRA_ALGORITHM,
               chainName: 'casper-test',
             }),
@@ -104,7 +107,7 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
     // Falls back to UnavailableCsprTradeClient when required config is absent.
     tradeExecutor: (() => {
       const tradePubKey = env.CSPR_TRADE_SENDER_PUBLIC_KEY || env.CASPER_GUARD_SENDER_PUBLIC_KEY;
-      const tradePemPath = env.CSPR_TRADE_SIGNER_PEM_PATH || env.CASPER_GUARD_SIGNER_PEM_PATH;
+      const tradePemPath = resolveTradePemPath(env) || resolvePemPath(env) || '';
       const tradeAvailable = env.CSPR_TRADE_MCP_URL !== '' && tradePubKey !== '' && tradePemPath !== '';
       const client = createLiveCsprTradeClient({
             mcpUrl: env.CSPR_TRADE_MCP_URL !== '' ? env.CSPR_TRADE_MCP_URL : undefined,
@@ -154,18 +157,42 @@ export function createCasperGuardRuntimeSigner(
   };
 }
 
+function resolvePemPath(env: Env): string | undefined {
+  if (env.CASPER_GUARD_SIGNER_PEM_PATH !== '') return env.CASPER_GUARD_SIGNER_PEM_PATH;
+  if (env.CASPER_GUARD_SIGNER_PEM_INLINE !== '') {
+    const pemContent = Buffer.from(env.CASPER_GUARD_SIGNER_PEM_INLINE, 'base64').toString('utf8');
+    const tmpPath = join(tmpdir(), 'casper_guard_signer.pem');
+    writeFileSync(tmpPath, pemContent, { mode: 0o600 });
+    return tmpPath;
+  }
+  return undefined;
+}
+
+function resolveTradePemPath(env: Env): string | undefined {
+  if (env.CSPR_TRADE_SIGNER_PEM_PATH !== '') return env.CSPR_TRADE_SIGNER_PEM_PATH;
+  if (env.CSPR_TRADE_SIGNER_PEM_INLINE !== '') {
+    const pemContent = Buffer.from(env.CSPR_TRADE_SIGNER_PEM_INLINE, 'base64').toString('utf8');
+    const tmpPath = join(tmpdir(), 'cspr_trade_signer.pem');
+    writeFileSync(tmpPath, pemContent, { mode: 0o600 });
+    return tmpPath;
+  }
+  return undefined;
+}
+
 function buildSigner(env: Env): CasperGuardSigner | undefined {
   switch (env.CASPER_GUARD_SIGNER_MODE) {
     case 'disabled':
       return undefined;
-    case 'local-testnet':
-      if (env.CASPER_GUARD_SIGNER_PEM_PATH === '') return undefined;
+    case 'local-testnet': {
+      const pemPath = resolvePemPath(env);
+      if (!pemPath) return undefined;
       return createCasperGuardRuntimeSigner(
         CasperSignerProvider.localTestnet({
-          pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH,
+          pemPath,
           algorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
         }),
       );
+    }
     case 'operator-wallet':
       return undefined;
     case 'enterprise-custody':
