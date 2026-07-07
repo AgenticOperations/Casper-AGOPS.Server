@@ -36,7 +36,8 @@ type CasperSdk = {
     standardPayment(amount: string): unknown;
   };
   StoredVersionedContractByHash: new (hash: unknown, entryPoint: string, args: unknown) => unknown;
-  Args: { fromMap(record: Record<string, unknown>): unknown };
+  Args: { fromMap(record: Record<string, unknown>): unknown; fromNamedArgs(args: unknown[]): unknown };
+  NamedArg: new (name: string, value: unknown) => unknown;
   CLValue: { newCLString(val: string): unknown };
   Hash: { fromHex(hex: string): unknown };
   Deploy: { makeDeploy(header: unknown, payment: unknown, session: unknown): { sign(key: unknown): void } };
@@ -82,8 +83,8 @@ export function createLiveCasperDeploySubmitter(cfg: {
         CASPER_KEY_ALGORITHM[cfg.algorithm] === 1 ? sdk.KeyAlgorithm.ED25519 : sdk.KeyAlgorithm.SECP256K1;
       const privateKey = sdk.PrivateKey.fromPem(pemContent, sdkAlgorithm);
 
-      const namedArgs = sdk.Args.fromMap(
-        Object.fromEntries(Object.entries(args).map(([k, v]) => [k, sdk.CLValue.newCLString(v)])),
+      const namedArgs = sdk.Args.fromNamedArgs(
+        Object.entries(args).map(([k, v]) => new sdk.NamedArg(k, sdk.CLValue.newCLString(v))),
       );
       const contractHash = sdk.Hash.fromHex(packageHash);
       const session = new sdk.ExecutableDeployItem();
