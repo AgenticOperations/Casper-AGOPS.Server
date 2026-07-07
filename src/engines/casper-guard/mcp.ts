@@ -278,6 +278,7 @@ const TOOL_DESCRIPTORS = [
       '(3) Pass that exact payment_required body (unmodified) to casper_guard_authorize_payment.',
       '(4) On ALLOW, use payment_header.value as the PAYMENT-SIGNATURE header and decision_id as x-guard-decision-id.',
       '(5) Retry the endpoint with those two headers — the server returns the data.',
+      '(6) Call casper_guard_reconcile with agent_id and decision_id to settle this payment and anchor the proof on-chain.',
       'No PEM key or manual signing required. The server handles all cryptography.',
     ].join(' '),
     inputSchema: {
@@ -403,6 +404,7 @@ async function authorizePaymentTool(
     // AUDIT ONLY — do not use this as a header value.
     signed_header_hash_audit_only: result.signedHeaderHash,
     _instructions: 'Retry the service endpoint with headers: { "PAYMENT-SIGNATURE": payment_header.value, "x-guard-decision-id": decision_id }. No PEM key or additional signing required.',
+    next_step: 'After the service call completes, call casper_guard_reconcile with agent_id and decision_id to settle this payment and anchor the proof on-chain.',
   };
 }
 
