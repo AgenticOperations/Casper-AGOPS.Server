@@ -412,7 +412,7 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
         `INSERT INTO treasury_deposit_intents
            (org_id, ref_id, expected_amount, status, deploy_hash, credited_amount, credited_at)
          VALUES ($1, $2, $3, 'credited', $4, $5, now())
-         ON CONFLICT (deploy_hash) DO NOTHING
+         ON CONFLICT DO NOTHING
          RETURNING id`,
         [
           orgId,

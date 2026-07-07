@@ -2,7 +2,6 @@ import { readdir, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import pg from 'pg';
-import { loadEnv } from '../config/env.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('./migrations', import.meta.url));
 
@@ -54,8 +53,9 @@ export async function runMigrations(pool: pg.Pool): Promise<string[]> {
 
 // CLI entrypoint: `npm run migrate`.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const env = loadEnv();
-  const pool = new pg.Pool({ connectionString: env.DATABASE_URL });
+  const dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl) { console.error('DATABASE_URL is required'); process.exit(1); }
+  const pool = new pg.Pool({ connectionString: dbUrl });
   runMigrations(pool)
     .then((ran) => {
       // eslint-disable-next-line no-console
