@@ -38,8 +38,7 @@ type CasperSdk = {
   StoredVersionedContractByHash: new (hash: unknown, entryPoint: string, args: unknown) => unknown;
   Args: new (map: Map<string, unknown>) => unknown;
   CLValue: { newCLString(val: string): unknown };
-  Hash: { fromHex(hex: string): unknown };
-  ContractHash: new (hash: unknown) => unknown;
+  ContractHash: { fromJSON(value: string): unknown };
   Deploy: { makeDeploy(header: unknown, payment: unknown, session: unknown): { sign(key: unknown): void } };
   // Casper 2.0 Transaction API
   NativeTransferBuilder: new () => {
@@ -86,7 +85,10 @@ export function createLiveCasperDeploySubmitter(cfg: {
       const namedArgs = new sdk.Args(
         new Map(Object.entries(args).map(([k, v]) => [k, sdk.CLValue.newCLString(v)])),
       );
-      const contractHash = new sdk.ContractHash(sdk.Hash.fromHex(packageHash));
+      // ContractHash.fromJSON with bare 64-char hex (no "hash-" prefix): gives a proper
+      // ContractHash whose .hash.toBytes() works for deploy serialization AND whose toJSON()
+      // emits bare hex — the node rejects a "hash-"-prefixed value here as odd-length Base16.
+      const contractHash = sdk.ContractHash.fromJSON(packageHash);
       const session = new sdk.ExecutableDeployItem();
       session.storedVersionedContractByHash = new sdk.StoredVersionedContractByHash(
         contractHash,
