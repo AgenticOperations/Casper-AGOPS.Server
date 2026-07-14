@@ -239,11 +239,13 @@ describe('AgentOps policy and hold lifecycle', () => {
         now: 2_000_000,
       },
     );
-    expect(tooFast).toEqual({
+    expect(tooFast).toMatchObject({
       outcome: 'DENY',
       decisionId: 'cgd_policy_velocity',
       reason: 'velocity_exceeded',
     });
+    // Denials carry a human-readable detail string (buildDenyDetail in policy.ts).
+    expect((tooFast as { detail?: string }).detail).toContain('Velocity limit');
 
     const riskyTrade = await authorizeCasperGuardIntent(
       { pool: stores.pool, redis: stores.redis, signer },

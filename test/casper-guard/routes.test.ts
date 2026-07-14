@@ -25,7 +25,7 @@ interface CasperSetupResponse {
     signer: { status: string };
     live_settlement: { status: string; reason?: string };
     odra_anchor: { status: string; reason?: string };
-    cspr_trade_policy: { status: string };
+    cspr_trade_policy: { status: string; reason?: string };
   };
 }
 
@@ -193,7 +193,7 @@ describe('AgentOps HTTP routes', () => {
         signer: { status: 'ready' },
         live_settlement: { status: 'blocked', reason: 'casper_facilitator_not_configured' },
         odra_anchor: { status: 'blocked', reason: 'odra_contract_not_bound' },
-        cspr_trade_policy: { status: 'ready' },
+        cspr_trade_policy: { status: 'blocked', reason: 'cspr_trade_mcp_not_configured' },
       },
     });
   });

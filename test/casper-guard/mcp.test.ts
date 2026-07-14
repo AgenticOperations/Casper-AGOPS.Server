@@ -11,10 +11,6 @@ interface ToolsListResponse {
   result: { tools: Array<{ name: string; inputSchema?: unknown }> };
 }
 
-interface JsonRpcResult<T> {
-  result: T;
-}
-
 interface AuthorizePaymentResult {
   outcome: 'ALLOW' | 'DENY';
   payment_header?: { name: string; value: string };
@@ -98,6 +94,16 @@ function mcpCall(name: string, args: Record<string, unknown>) {
   return { jsonrpc: '2.0', id: crypto.randomUUID(), method: 'tools/call', params: { name, arguments: args } };
 }
 
+// MCP tools/call responses wrap payloads in result.content[0].text (JSON string) per the MCP spec
+// (see rpcToolResult in src/engines/casper-guard/mcp.ts). Decode that back into the typed payload.
+interface McpToolContentResponse {
+  result: { content: Array<{ type: string; text: string }> };
+}
+function decodeToolResult<T>(res: { json<U>(): U }): T {
+  const body = res.json<McpToolContentResponse>();
+  return JSON.parse(body.result.content[0]!.text) as T;
+}
+
 describe('AgentOps MCP route', () => {
   it('lists the agent-facing AgentOps tools with JSON schemas', async () => {
     if (!app) return;
@@ -116,6 +122,8 @@ describe('AgentOps MCP route', () => {
       'casper_guard_decision_status',
       'casper_guard_audit_export',
       'casper_guard_reconcile',
+      'casper_guard_legal_context',
+      'casper_guard_list_services',
     ]);
     expect(body.result.tools[1]).toMatchObject({
       name: 'casper_guard_authorize_payment',
@@ -150,7 +158,7 @@ describe('AgentOps MCP route', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    const result = res.json<JsonRpcResult<AuthorizePaymentResult>>().result;
+    const result = decodeToolResult<AuthorizePaymentResult>(res);
     expect(result).toMatchObject({
       outcome: 'ALLOW',
       payment_header: { name: 'PAYMENT-SIGNATURE', value: 'mcp-payment-signature' },
@@ -187,7 +195,7 @@ describe('AgentOps MCP route', () => {
         payment_required: casperPaymentRequired('12'),
       }),
     });
-    const decisionId = authorized.json<JsonRpcResult<AuthorizePaymentResult>>().result.decision_id;
+    const decisionId = decodeToolResult<AuthorizePaymentResult>(authorized).decision_id;
 
     const status = await app.inject({
       method: 'POST',
@@ -196,7 +204,7 @@ describe('AgentOps MCP route', () => {
       payload: mcpCall('casper_guard_decision_status', { decision_id: decisionId }),
     });
     expect(status.statusCode).toBe(200);
-    expect(status.json<JsonRpcResult<DecisionStatusResult>>().result).toMatchObject({
+    expect(decodeToolResult<DecisionStatusResult>(status)).toMatchObject({
       decision_id: decisionId,
       outcome: 'ALLOW',
       status: 'SIGNED',
@@ -210,7 +218,7 @@ describe('AgentOps MCP route', () => {
       payload: mcpCall('casper_guard_audit_export', { decision_id: decisionId }),
     });
     expect(audit.statusCode).toBe(200);
-    expect(audit.json<JsonRpcResult<AuditExportResult>>().result).toMatchObject({
+    expect(decodeToolResult<AuditExportResult>(audit)).toMatchObject({
       decision: {
         decision_id: decisionId,
         status: 'SIGNED',
