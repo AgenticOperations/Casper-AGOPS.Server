@@ -471,6 +471,7 @@ describe('AgentOps reconciliation and Odra anchoring', () => {
       anchorKind: 'odra-guard-registry',
       decisionHash,
       status: 'submitted',
+      network: settled.network,
     });
     await stores.pool.query(
       `UPDATE casper_guard_audit_anchors

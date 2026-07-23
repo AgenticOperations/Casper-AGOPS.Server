@@ -195,6 +195,7 @@ export async function authorizeCasperGuardIntent(
           assetKind: asset.kind,
           assetRef: casperGuardAssetRef(asset),
           status: 'RESERVED',
+          network: params.intent.network,
         },
       );
     } catch (err) {

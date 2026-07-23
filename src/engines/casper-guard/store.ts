@@ -36,6 +36,7 @@ export interface CreateCasperGuardHoldInput {
   assetKind: 'cep18' | 'native' | 'native-eth' | 'erc20';
   assetRef: string;
   status: 'RESERVED' | 'SETTLED' | 'RELEASED';
+  network: string;
 }
 
 export interface AppendCasperGuardReconciliationAttemptInput {
@@ -45,6 +46,7 @@ export interface AppendCasperGuardReconciliationAttemptInput {
   status: 'pending' | 'settled' | 'failed' | 'ambiguous';
   evidence: Record<string, unknown>;
   errorCode?: string | null;
+  network: string;
 }
 
 export interface AppendCasperGuardAuditAnchorInput {
@@ -54,6 +56,7 @@ export interface AppendCasperGuardAuditAnchorInput {
   decisionHash: string;
   status: 'submitted' | 'confirmed' | 'failed';
   txHash?: string | null;
+  network: string;
 }
 
 export interface ClaimCasperGuardAuditAnchorInput {
@@ -61,6 +64,7 @@ export interface ClaimCasperGuardAuditAnchorInput {
   decisionId: string;
   decisionHash: string;
   staleSubmittedMs: number;
+  network: string;
 }
 
 export interface CasperGuardDecisionRecord {
@@ -97,6 +101,7 @@ export interface CasperGuardHoldRecord {
   assetKind: 'cep18' | 'native' | 'native-eth' | 'erc20';
   assetRef: string;
   status: 'RESERVED' | 'SETTLED' | 'RELEASED';
+  network: string;
 }
 
 export interface CasperGuardReconciliationAttemptRecord {
@@ -335,8 +340,8 @@ export async function createCasperGuardHold(
 async function insertCasperGuardHold(db: Queryable, input: CreateCasperGuardHoldInput): Promise<void> {
   await db.query(
     `INSERT INTO casper_guard_holds
-       (hold_id, decision_id, org_id, agent_id, amount, asset_kind, asset_ref, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+       (hold_id, decision_id, org_id, agent_id, amount, asset_kind, asset_ref, status, network)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
     [
       input.holdId,
       input.decisionId,
@@ -346,6 +351,7 @@ async function insertCasperGuardHold(db: Queryable, input: CreateCasperGuardHold
       input.assetKind,
       input.assetRef,
       input.status,
+      input.network,
     ],
   );
 }
@@ -356,8 +362,8 @@ export async function appendCasperGuardReconciliationAttempt(
 ): Promise<void> {
   await pool.query(
     `INSERT INTO casper_guard_reconciliation_attempts
-       (decision_id, attempt_number, source, status, evidence, error_code)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
+       (decision_id, attempt_number, source, status, evidence, error_code, network)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
       input.decisionId,
       input.attemptNumber,
@@ -365,6 +371,7 @@ export async function appendCasperGuardReconciliationAttempt(
       input.status,
       JSON.stringify(input.evidence),
       input.errorCode ?? null,
+      input.network,
     ],
   );
 }
@@ -375,8 +382,8 @@ export async function appendCasperGuardAuditAnchor(
 ): Promise<void> {
   await pool.query(
     `INSERT INTO casper_guard_audit_anchors
-       (anchor_id, decision_id, anchor_kind, decision_hash, status, tx_hash)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
+       (anchor_id, decision_id, anchor_kind, decision_hash, status, tx_hash, network)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
       input.anchorId,
       input.decisionId,
@@ -384,6 +391,7 @@ export async function appendCasperGuardAuditAnchor(
       input.decisionHash,
       input.status,
       input.txHash ?? null,
+      input.network,
     ],
   );
 }
@@ -394,8 +402,8 @@ export async function claimCasperGuardAuditAnchor(
 ): Promise<string | null> {
   const result = await pool.query<{ anchor_id: string }>(
     `INSERT INTO casper_guard_audit_anchors
-       (anchor_id, decision_id, anchor_kind, decision_hash, status, tx_hash)
-     VALUES ($1, $2, 'odra-guard-registry', $3, 'submitted', NULL)
+       (anchor_id, decision_id, anchor_kind, decision_hash, status, tx_hash, network)
+     VALUES ($1, $2, 'odra-guard-registry', $3, 'submitted', NULL, $5)
      ON CONFLICT (decision_id, anchor_kind, decision_hash) DO UPDATE
        SET anchor_id = casper_guard_audit_anchors.anchor_id,
            status = 'submitted',
@@ -407,7 +415,7 @@ export async function claimCasperGuardAuditAnchor(
             AND casper_guard_audit_anchors.anchored_at < now() - ($4::integer * interval '1 millisecond')
           )
      RETURNING anchor_id`,
-    [input.anchorId, input.decisionId, input.decisionHash, input.staleSubmittedMs],
+    [input.anchorId, input.decisionId, input.decisionHash, input.staleSubmittedMs, input.network],
   );
   return result.rows[0]?.anchor_id ?? null;
 }
@@ -550,8 +558,9 @@ async function readHold(
     asset_kind: 'cep18' | 'native' | 'native-eth' | 'erc20';
     asset_ref: string;
     status: 'RESERVED' | 'SETTLED' | 'RELEASED';
+    network: string;
   }>(
-    `SELECT hold_id, amount::text, asset_kind, asset_ref, status
+    `SELECT hold_id, amount::text, asset_kind, asset_ref, status, network
        FROM casper_guard_holds
       WHERE decision_id = $1`,
     [decisionId],
@@ -564,6 +573,7 @@ async function readHold(
     assetKind: row.asset_kind,
     assetRef: row.asset_ref,
     status: row.status,
+    network: row.network,
   };
 }
 

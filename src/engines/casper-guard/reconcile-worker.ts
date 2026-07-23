@@ -104,6 +104,7 @@ export async function reconcileCasperGuardDecision(
     status: attemptStatus(observed.status),
     evidence: observed.evidence,
     errorCode: observed.status === 'settled' ? null : observed.errorCode ?? null,
+    network: decision.network,
   });
 
   console.log('[reconcile] switching on observed.status:', observed.status);
@@ -264,6 +265,7 @@ async function ensureAuditAnchor(
       decisionId: decision.decisionId,
       decisionHash,
       staleSubmittedMs: deps.staleSubmittedAnchorMs ?? 300_000,
+      network: decision.network,
     });
   if (!anchorId) return false;
 
