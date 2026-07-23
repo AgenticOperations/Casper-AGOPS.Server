@@ -62,6 +62,8 @@ const EnvSchema = z.object({
   CASPER_GUARD_ODRA_RPC_URL: z.string().url().or(z.literal('')).default(''),
   CASPER_GUARD_ODRA_ENTRY_POINT: z.string().min(1).default('anchor_decision'),
   CASPER_GUARD_ODRA_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('secp256k1'),
+  // Chain name for the Odra anchor deploy. 'casper-test' = testnet, 'casper' = mainnet.
+  CASPER_GUARD_ODRA_CHAIN_NAME: z.enum(['casper-test', 'casper']).default('casper-test'),
   // Casper operator account hash (64 hex, no prefix). Used as the AllocationPolicy allowedDestinations
   // float fence on Casper — replaces the EVM agent-float address that Arc used.
   CASPER_OPERATOR_ACCOUNT_HASH: z

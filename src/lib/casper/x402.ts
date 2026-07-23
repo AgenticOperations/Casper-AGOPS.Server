@@ -47,6 +47,12 @@ type ExactCasperFacilitatorRuntime = {
 export const CASPER_X402_HEADER_NAME = 'PAYMENT-SIGNATURE' as const;
 export const CASPER_X402_VERSION = x402Version;
 export const CASPER_X402_TESTNET_NETWORK = 'casper:casper-test' as const;
+export const CASPER_X402_MAINNET_NETWORK = 'casper:casper' as const;
+// Additive: mainnet deploy (D-0) allows both networks side by side. Testnet must keep working unchanged.
+export const CASPER_X402_ALLOWED_NETWORKS = [
+  CASPER_X402_TESTNET_NETWORK,
+  CASPER_X402_MAINNET_NETWORK,
+] as const;
 export type CasperX402PaymentRequirements = PaymentRequirements;
 
 export class CasperX402ValidationError extends Error {
@@ -153,7 +159,7 @@ export function validateCasperPaymentRequirements(requirements: PaymentRequireme
     throw new CasperX402ValidationError('Unsupported Casper x402 scheme', 'scheme');
   }
 
-  if (requirements.network !== CASPER_X402_TESTNET_NETWORK) {
+  if (!CASPER_X402_ALLOWED_NETWORKS.includes(requirements.network as never)) {
     throw new CasperX402ValidationError('Unsupported Casper x402 network', 'network');
   }
 

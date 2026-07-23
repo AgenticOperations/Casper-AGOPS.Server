@@ -94,7 +94,7 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
               rpcUrl: env.CASPER_GUARD_ODRA_RPC_URL,
               pemPath: resolvePemPath(env) ?? '',
               algorithm: env.CASPER_GUARD_ODRA_ALGORITHM,
-              chainName: 'casper-test',
+              chainName: env.CASPER_GUARD_ODRA_CHAIN_NAME,
             }),
           }),
         }
