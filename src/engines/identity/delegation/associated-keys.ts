@@ -52,3 +52,31 @@ export function buildRevokeDeployArgs(input: AssociatedKeyDeployInput): RevokeDe
     weight: 0,
   };
 }
+
+export interface UnsignedGrantDeploy {
+  kind: 'update_associated_keys_grant';
+  masterAccount: string;
+  agentPublicKey: string;
+  args: GrantDeployArgs;
+}
+
+/**
+ * D-2②(a): the unsigned deploy args for the BROWSER to sign via CSPR.click. Server never signs —
+ * this returns plain data, no key material touched.
+ */
+export function buildGrantDeployForBrowserSigning(input: AssociatedKeyDeployInput): UnsignedGrantDeploy {
+  return {
+    kind: 'update_associated_keys_grant',
+    masterAccount: input.masterAccount,
+    agentPublicKey: input.agentPublicKey,
+    args: buildGrantDeployArgs(input),
+  };
+}
+
+/**
+ * D-2②(b): the SDK helper for headless signing. Deliberately identical to the browser path —
+ * proves both entry points produce the same unsigned deploy shape and neither signs server-side.
+ */
+export function buildGrantDeployForHeadlessSigning(input: AssociatedKeyDeployInput): UnsignedGrantDeploy {
+  return buildGrantDeployForBrowserSigning(input);
+}

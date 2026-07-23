@@ -12,6 +12,7 @@ import type {
 import {
   createCasperGuardDecision,
   createCasperGuardDecisionAndHold,
+  listCasperGuardDecisionsForRevoke,
   markCasperGuardDecisionSigned,
   markCasperGuardDecisionTerminal,
   readCasperGuardDecision,
@@ -521,8 +522,32 @@ function idempotencyFingerprint(params: {
   );
 }
 
+export interface RevokeAgentInFlightResult {
+  abortedDecisionIds: string[];
+  committedDecisionIds: string[];
+}
+
+/**
+ * D-2⑤ honest hard-stop for in-flight decisions on revoke: abort every decision not yet SIGNED
+ * (release its hold, mark FAILED_TERMINAL); leave SIGNED/BROADCASTING/EXPIRY_CHECK/SETTLED
+ * decisions alone to settle. Returns both sets so the caller can record "revoked mid-flight, N
+ * committed" in the audit trail.
+ */
+export async function revokeAgentInFlight(
+  deps: Pick<CasperGuardPolicyDeps, 'pool' | 'redis'>,
+  params: { agentId: string; orgId: string },
+): Promise<RevokeAgentInFlightResult> {
+  const { reserved, committed } = await listCasperGuardDecisionsForRevoke(deps.pool, params);
+
+  for (const decisionId of reserved) {
+    await failReservedDecision(deps, { agentId: params.agentId, decisionId });
+  }
+
+  return { abortedDecisionIds: reserved, committedDecisionIds: committed };
+}
+
 async function failReservedDecision(
-  deps: CasperGuardPolicyDeps,
+  deps: Pick<CasperGuardPolicyDeps, 'pool' | 'redis'>,
   params: { agentId: string; decisionId: string },
 ): Promise<void> {
   const transitioned = await markCasperGuardDecisionTerminal(deps.pool, {

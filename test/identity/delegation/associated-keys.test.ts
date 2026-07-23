@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   buildGrantDeployArgs,
   buildRevokeDeployArgs,
+  buildGrantDeployForBrowserSigning,
+  buildGrantDeployForHeadlessSigning,
   GRANT_THRESHOLDS,
 } from '../../../src/engines/identity/delegation/associated-keys.js';
 
@@ -23,6 +25,35 @@ describe('buildGrantDeployArgs (D-2①)', () => {
 
   it('thresholds are fixed at deploy=1, key-management=3 regardless of caller input', () => {
     expect(GRANT_THRESHOLDS).toEqual({ deployThreshold: 1, keyManagementThreshold: 3 });
+  });
+});
+
+describe('the two grant entry points (D-2②) — browser CSPR.click vs SDK headless', () => {
+  it('return the identical unsigned deploy shape for the same input', () => {
+    const input = { masterAccount: MASTER_ACCOUNT, agentPublicKey: AGENT_PUBLIC_KEY };
+    const browser = buildGrantDeployForBrowserSigning(input);
+    const headless = buildGrantDeployForHeadlessSigning(input);
+
+    expect(browser).toEqual(headless);
+  });
+
+  it('never returns a signature or signed flag — both are strictly unsigned deploy args', () => {
+    const input = { masterAccount: MASTER_ACCOUNT, agentPublicKey: AGENT_PUBLIC_KEY };
+    const browser = buildGrantDeployForBrowserSigning(input) as unknown as Record<string, unknown>;
+    const headless = buildGrantDeployForHeadlessSigning(input) as unknown as Record<string, unknown>;
+
+    expect(browser.signature).toBeUndefined();
+    expect(browser.signed).toBeUndefined();
+    expect(headless.signature).toBeUndefined();
+    expect(headless.signed).toBeUndefined();
+  });
+
+  it('both wrap buildGrantDeployArgs — same weight/threshold values', () => {
+    const input = { masterAccount: MASTER_ACCOUNT, agentPublicKey: AGENT_PUBLIC_KEY };
+    const direct = buildGrantDeployArgs(input);
+    const browser = buildGrantDeployForBrowserSigning(input);
+
+    expect(browser.args).toEqual(direct);
   });
 });
 
