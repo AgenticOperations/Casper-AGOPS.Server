@@ -900,4 +900,41 @@ describe('AgentOps policy and hold lifecycle', () => {
       hold: { status: 'RELEASED' },
     });
   });
+
+  it('D-5②/D.2: a data-only agent (allowedActions has no cspr-trade) attempting a swap is denied action_not_allowed', async ({
+    skip,
+  }) => {
+    if (!stores) return skip();
+    const { agentId, orgId } = await seedAgent(stores.pool, stores.redis, 100);
+    let signCalls = 0;
+    const signer = signerReturning('sha256:should-not-exist', () => {
+      signCalls += 1;
+    });
+
+    const dataOnlyPolicy: CasperGuardPolicy = {
+      ...allowPolicy,
+      allowedActions: ['x402-payment'], // no cspr-trade — matches a data/risk fleet role
+    };
+
+    const result = await authorizeCasperGuardIntent(
+      { pool: stores.pool, redis: stores.redis, signer },
+      {
+        decisionId: 'cgd_policy_action_not_allowed',
+        holdId: 'cgh_policy_action_not_allowed',
+        idempotencyKey: 'idem_policy_action_not_allowed',
+        orgId,
+        agentId,
+        intent: csprTradeIntent(),
+        policy: dataOnlyPolicy,
+        now: 2_000_000,
+      },
+    );
+
+    expect(result).toEqual({
+      outcome: 'DENY',
+      decisionId: 'cgd_policy_action_not_allowed',
+      reason: 'action_not_allowed',
+    });
+    expect(signCalls).toBe(0);
+  });
 });
