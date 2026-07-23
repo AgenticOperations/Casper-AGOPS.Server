@@ -34,7 +34,7 @@ import type { CasperGuardIntent, CasperGuardNetwork } from '../engines/casper-gu
 
 export interface CasperClientSignerProvider {
   mode: CasperSignerMode;
-  getClientSigner(input: { network: CasperNetwork }): Promise<CasperClientSigner>;
+  getClientSigner(input: { network: CasperNetwork; agentId?: string }): Promise<CasperClientSigner>;
 }
 
 interface NetworkSlotEnvFields {
@@ -264,7 +264,10 @@ export function createCasperGuardRuntimeSigner(
   return {
     kind: provider.mode,
     async sign(input) {
-      const signer = await provider.getClientSigner({ network: input.intent.network });
+      const signer = await provider.getClientSigner({
+        network: input.intent.network,
+        ...(input.agentId ? { agentId: input.agentId } : {}),
+      });
       if (input.intent.kind === 'x402-payment') {
         const signed = await createCasperX402PaymentHeader({
           signer,

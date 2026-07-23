@@ -1,5 +1,7 @@
+import type pg from 'pg';
 import type { CasperClientSigner, CasperNetwork } from '../../lib/casper/x402.js';
 import type { KeyVault } from './key-vault.js';
+import { readActiveDelegatedKey } from '../identity/delegation/delegated-keys-store.js';
 
 const importRuntime = (specifier: string): Promise<unknown> =>
   import(/* @vite-ignore */ specifier) as Promise<unknown>;
@@ -62,4 +64,36 @@ export async function resolveAgentCasperSigner(input: {
   }
 
   return input.fallbackProvider.getClientSigner({ network: input.network });
+}
+
+export interface DelegationAwareClientSignerProvider {
+  getClientSigner(input: { network: CasperNetwork; agentId?: string }): Promise<CasperClientSigner>;
+}
+
+/**
+ * B.4: wraps the existing per-network `getClientSigner({ network })` seam with agent-aware
+ * delegation. Fits `CasperClientSignerProvider` from config/casper-guard.ts exactly (an extra
+ * optional `agentId` widens, never narrows, the input type — legacy call sites that omit it keep
+ * working unchanged and always fall back to the custodial provider).
+ */
+export function createDelegationAwareSignerProvider(input: {
+  pool: pg.Pool;
+  vault: KeyVault;
+  fallbackProvider: CasperClientSignerProviderLike;
+}): DelegationAwareClientSignerProvider {
+  return {
+    async getClientSigner({ network, agentId }) {
+      if (!agentId) {
+        return input.fallbackProvider.getClientSigner({ network });
+      }
+      const active = await readActiveDelegatedKey(input.pool, { agentId });
+      return resolveAgentCasperSigner({
+        vault: input.vault,
+        agentId,
+        delegatedPublicKeyHex: active?.publicKey,
+        network,
+        fallbackProvider: input.fallbackProvider,
+      });
+    },
+  };
 }

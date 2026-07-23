@@ -74,6 +74,7 @@ export interface CasperGuardSigner {
   sign(input: {
     decisionId: string;
     intent: CasperGuardIntent;
+    agentId?: string;
   }): Promise<{
     signedHeaderHash: string;
     headers?: Record<string, string>;
@@ -227,6 +228,7 @@ export async function authorizeCasperGuardIntent(
       const signed = await deps.signer.sign({
         decisionId: params.decisionId,
         intent: params.intent,
+        agentId: params.agentId,
       });
       const signedMarked = await markCasperGuardDecisionSigned(deps.pool, {
         decisionId: params.decisionId,
