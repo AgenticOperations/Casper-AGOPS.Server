@@ -4,6 +4,7 @@ import type { Redis } from 'ioredis';
 import { releaseHold, reserveHoldWithinPolicy, windowSum, snapshotWindows } from '../ledger/window.js';
 import { keys } from '../../redis/keyspace.js';
 import { isAgentSuspended } from '../control/kill-switch.js';
+import { verifyMinReceivedWithinSlippage } from './quote-verification.js';
 import type {
   CasperGuardActionKind,
   CasperGuardIntent,
@@ -83,10 +84,17 @@ export interface CasperGuardSigner {
   }>;
 }
 
+/** D-5⑤/E.2: optional live-quote lookup so a swap's min-received is checked against the market,
+ * not just the intent's self-reported slippageBps. Absent = today's behavior (self-report only). */
+export interface CasperGuardTradeQuoter {
+  quoteAmountOut(input: { fromAsset: string; toAsset: string; amount: string }): Promise<bigint>;
+}
+
 export interface CasperGuardPolicyDeps {
   pool: pg.Pool;
   redis: Redis;
   signer: CasperGuardSigner;
+  tradeQuoter?: CasperGuardTradeQuoter;
 }
 
 export interface CasperGuardReleaseDeps {
@@ -147,7 +155,7 @@ export async function authorizeCasperGuardIntent(
     });
     if (existing) return authorizeResultFromExisting(existing, params);
 
-    const decision = await evaluateCasperGuardPolicy(deps.redis, params);
+    const decision = await evaluateCasperGuardPolicy(deps.redis, params, deps.tradeQuoter);
     if (!decision.allow) {
       await persistDeny(deps.pool, params, decision.reason);
       return { outcome: 'DENY', decisionId: params.decisionId, reason: decision.reason };
@@ -293,6 +301,7 @@ async function evaluateCasperGuardPolicy(
     policy: CasperGuardPolicy;
     now: number;
   },
+  tradeQuoter?: CasperGuardTradeQuoter,
 ): Promise<{ allow: true } | { allow: false; reason: CasperGuardDenyReason }> {
   if ((await redis.exists(keys.denyAll(params.orgId))) === 1) {
     return { allow: false, reason: 'org_suspended' };
@@ -351,6 +360,22 @@ async function evaluateCasperGuardPolicy(
       !tradePolicy.allowedRiskLabels.includes(params.intent.riskLabel)
     ) {
       return { allow: false, reason: 'trade_risk_exceeded' };
+    }
+
+    if (tradeQuoter) {
+      const quotedAmountOut = await tradeQuoter.quoteAmountOut({
+        fromAsset: casperGuardAssetRef(params.intent.fromAsset),
+        toAsset: casperGuardAssetRef(params.intent.toAsset),
+        amount: params.intent.amount,
+      });
+      const verified = verifyMinReceivedWithinSlippage({
+        quotedAmountOut,
+        maxSlippageBps: tradePolicy.maxSlippageBps,
+        intentMinReceived: BigInt(params.intent.minReceived),
+      });
+      if (!verified.ok) {
+        return { allow: false, reason: 'trade_risk_exceeded' };
+      }
     }
   }
 
