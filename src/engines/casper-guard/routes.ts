@@ -40,22 +40,25 @@ export interface CasperGuardReadiness {
   reason?: string;
 }
 
-export interface CasperGuardDeps {
+export interface CasperGuardNetworkSlot {
   signer?: CasperGuardSigner;
-  networks?: CasperGuardNetwork[];
-  mcpUrl?: string;
   liveSettlement?: CasperGuardReadiness;
-  /** Factory that produces a live settlement reader (injected by config when CASPER_GUARD_FACILITATOR_RPC_URL is set). */
   settlementReaderFactory?: () => CasperGuardSettlementReader;
   odra?: CasperGuardReadiness & { contractPackage?: string };
   anchorer?: GuardRegistryAnchorer;
-  trade?: {
-    maxSlippageBps: number;
-    allowedRiskLabels: string[];
-  };
   tradeExecutor?: {
     available: boolean;
     execute(input: { intent: { pair: string; amount: string } }): Promise<unknown>;
+  };
+}
+
+export interface CasperGuardDeps {
+  // shared
+  networks?: CasperGuardNetwork[];
+  mcpUrl?: string;
+  trade?: {
+    maxSlippageBps: number;
+    allowedRiskLabels: string[];
   };
   /**
    * Authoritative (resourceId → payTo) bindings for x402-payment scope enforcement.
@@ -65,6 +68,18 @@ export interface CasperGuardDeps {
    * to obtain a signature for an out-of-scope payTo recipient.
    */
   serviceDestinations?: Record<string, string>;
+  // per-network
+  byNetwork?: Partial<Record<'casper:casper-test' | 'casper:casper', CasperGuardNetworkSlot>>;
+  // legacy top-level (testnet mirror) — kept until all route call sites migrate to byNetwork
+  signer?: CasperGuardSigner;
+  liveSettlement?: CasperGuardReadiness;
+  settlementReaderFactory?: () => CasperGuardSettlementReader;
+  odra?: CasperGuardReadiness & { contractPackage?: string };
+  anchorer?: GuardRegistryAnchorer;
+  tradeExecutor?: {
+    available: boolean;
+    execute(input: { intent: { pair: string; amount: string } }): Promise<unknown>;
+  };
 }
 
 const positiveIntegerString = z.string().regex(/^[1-9][0-9]*$/);

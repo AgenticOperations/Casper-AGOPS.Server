@@ -12,7 +12,7 @@ import {
   type CasperClientSigner,
   type CasperNetwork,
 } from '../lib/casper/x402.js';
-import type { CasperGuardDeps } from '../engines/casper-guard/routes.js';
+import type { CasperGuardDeps, CasperGuardNetworkSlot } from '../engines/casper-guard/routes.js';
 import {
   createCasperRpcSettlementReader,
   createCsprTradeSettlementReader,
@@ -37,36 +37,134 @@ export interface CasperClientSignerProvider {
   getClientSigner(input: { network: CasperNetwork }): Promise<CasperClientSigner>;
 }
 
-export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
-  const signer = buildSigner(env);
-  const odraConfigured =
-    env.CASPER_GUARD_ODRA_PACKAGE_HASH !== '' && env.CASPER_GUARD_ODRA_RPC_URL !== '';
-  const serviceDestinations = parseServiceDestinations(env.CASPER_GUARD_SERVICE_DESTINATIONS);
+interface NetworkSlotEnvFields {
+  chainName: 'casper-test' | 'casper';
+  signerMode: Env['CASPER_GUARD_SIGNER_MODE'];
+  signerPemPath: string;
+  signerPemInline: string;
+  signerAlgorithm: 'ed25519' | 'secp256k1';
+  odraPackageHash: string;
+  odraRpcUrl: string;
+  odraAlgorithm: 'ed25519' | 'secp256k1';
+  facilitatorRpcUrl: string;
+  facilitatorUrl: string;
+  tradeMcpUrl: string;
+  tradeSenderPublicKey: string;
+  tradeSignerPemPath: string;
+  tradeSignerPemInline: string;
+  tradeSignerAlgorithm: 'ed25519' | 'secp256k1';
+}
+
+function testnetSlotEnvFields(env: Env): NetworkSlotEnvFields {
+  return {
+    chainName: 'casper-test',
+    signerMode: env.CASPER_GUARD_SIGNER_MODE,
+    signerPemPath: env.CASPER_GUARD_SIGNER_PEM_PATH,
+    signerPemInline: env.CASPER_GUARD_SIGNER_PEM_INLINE,
+    signerAlgorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
+    odraPackageHash: env.CASPER_GUARD_ODRA_PACKAGE_HASH,
+    odraRpcUrl: env.CASPER_GUARD_ODRA_RPC_URL,
+    odraAlgorithm: env.CASPER_GUARD_ODRA_ALGORITHM,
+    facilitatorRpcUrl: env.CASPER_GUARD_FACILITATOR_RPC_URL,
+    facilitatorUrl: env.CASPER_GUARD_FACILITATOR_URL,
+    tradeMcpUrl: env.CSPR_TRADE_MCP_URL,
+    tradeSenderPublicKey: env.CSPR_TRADE_SENDER_PUBLIC_KEY || env.CASPER_GUARD_SENDER_PUBLIC_KEY,
+    tradeSignerPemPath: env.CSPR_TRADE_SIGNER_PEM_PATH,
+    tradeSignerPemInline: env.CSPR_TRADE_SIGNER_PEM_INLINE,
+    tradeSignerAlgorithm: env.CSPR_TRADE_SIGNER_ALGORITHM,
+  };
+}
+
+function mainnetSlotEnvFields(env: Env): NetworkSlotEnvFields {
+  return {
+    chainName: 'casper',
+    // Mainnet reuses the same signer-mode gate as testnet (disabled/local-testnet/etc.) — only
+    // the key material and network-specific endpoints differ per slot.
+    signerMode: env.CASPER_GUARD_SIGNER_MODE,
+    signerPemPath: env.CASPER_GUARD_MAINNET_SIGNER_PEM_PATH,
+    signerPemInline: env.CASPER_GUARD_MAINNET_SIGNER_PEM_INLINE,
+    signerAlgorithm: env.CASPER_GUARD_MAINNET_SIGNER_ALGORITHM,
+    odraPackageHash: env.CASPER_GUARD_MAINNET_ODRA_PACKAGE_HASH,
+    odraRpcUrl: env.CASPER_GUARD_MAINNET_ODRA_RPC_URL,
+    odraAlgorithm: env.CASPER_GUARD_MAINNET_ODRA_ALGORITHM,
+    facilitatorRpcUrl: env.CASPER_GUARD_MAINNET_FACILITATOR_RPC_URL,
+    facilitatorUrl: env.CASPER_GUARD_MAINNET_FACILITATOR_URL,
+    tradeMcpUrl: env.CSPR_TRADE_MAINNET_MCP_URL,
+    tradeSenderPublicKey: env.CSPR_TRADE_MAINNET_SENDER_PUBLIC_KEY,
+    tradeSignerPemPath: env.CSPR_TRADE_MAINNET_SIGNER_PEM_PATH,
+    tradeSignerPemInline: env.CSPR_TRADE_MAINNET_SIGNER_PEM_INLINE,
+    tradeSignerAlgorithm: env.CSPR_TRADE_MAINNET_SIGNER_ALGORITHM,
+  };
+}
+
+function resolveSlotPemPath(pemPath: string, pemInline: string, tmpFileName: string): string | undefined {
+  if (pemPath !== '') return pemPath;
+  if (pemInline !== '') {
+    const pemContent = Buffer.from(pemInline, 'base64').toString('utf8');
+    const tmpPath = join(tmpdir(), tmpFileName);
+    writeFileSync(tmpPath, pemContent, { mode: 0o600 });
+    return tmpPath;
+  }
+  return undefined;
+}
+
+function buildNetworkSlot(fields: NetworkSlotEnvFields, env: Env): CasperGuardNetworkSlot {
+  const signerPemPath = resolveSlotPemPath(
+    fields.signerPemPath,
+    fields.signerPemInline,
+    `casper_guard_signer_${fields.chainName}.pem`,
+  );
+  const signer = (() => {
+    switch (fields.signerMode) {
+      case 'disabled':
+        return undefined;
+      case 'local-testnet': {
+        if (!signerPemPath) return undefined;
+        return createCasperGuardRuntimeSigner(
+          CasperSignerProvider.localTestnet({
+            pemPath: signerPemPath,
+            algorithm: fields.signerAlgorithm,
+          }),
+        );
+      }
+      case 'operator-wallet':
+        return undefined;
+      case 'enterprise-custody':
+        return undefined;
+    }
+  })();
+
+  const odraConfigured = fields.odraPackageHash !== '' && fields.odraRpcUrl !== '';
+  const tradePubKey = fields.tradeSenderPublicKey;
+  const tradePemPath =
+    resolveSlotPemPath(fields.tradeSignerPemPath, fields.tradeSignerPemInline, `cspr_trade_signer_${fields.chainName}.pem`) ||
+    signerPemPath ||
+    '';
+  const tradeAvailable = fields.tradeMcpUrl !== '' && tradePubKey !== '' && tradePemPath !== '';
+  const tradeAlgorithm = fields.tradeSignerPemPath !== '' ? fields.tradeSignerAlgorithm : fields.signerAlgorithm;
+
   return {
     ...(signer ? { signer } : {}),
-    networks: parseNetworks(env.CASPER_GUARD_NETWORKS),
-    ...(serviceDestinations ? { serviceDestinations } : {}),
-    mcpUrl: env.CASPER_GUARD_MCP_URL,
     liveSettlement:
-      env.CASPER_GUARD_FACILITATOR_RPC_URL !== ''
+      fields.facilitatorRpcUrl !== ''
         ? { configured: true }
         : { configured: false, reason: 'casper_facilitator_not_configured' },
-    ...(env.CASPER_GUARD_FACILITATOR_RPC_URL !== ''
+    ...(fields.facilitatorRpcUrl !== ''
       ? {
           settlementReaderFactory: () => {
-            const deployReader = createLiveDeployReader({ rpcUrl: env.CASPER_GUARD_FACILITATOR_RPC_URL });
+            const deployReader = createLiveDeployReader({ rpcUrl: fields.facilitatorRpcUrl });
             const tradeClient = createLiveCsprTradeClient({
-              mcpUrl: env.CSPR_TRADE_MCP_URL !== '' ? env.CSPR_TRADE_MCP_URL : undefined,
-              senderPublicKey: (env.CSPR_TRADE_SENDER_PUBLIC_KEY || env.CASPER_GUARD_SENDER_PUBLIC_KEY) || undefined,
-              pemPath: (resolveTradePemPath(env) || resolvePemPath(env)) || undefined,
-              algorithm: env.CSPR_TRADE_SIGNER_PEM_PATH !== '' ? env.CSPR_TRADE_SIGNER_ALGORITHM : env.CASPER_GUARD_SIGNER_ALGORITHM,
+              mcpUrl: fields.tradeMcpUrl !== '' ? fields.tradeMcpUrl : undefined,
+              senderPublicKey: tradePubKey || undefined,
+              pemPath: tradePemPath || undefined,
+              algorithm: tradeAlgorithm,
             });
             const csprTradeReader = createCsprTradeSettlementReader(tradeClient, deployReader);
             // When the hosted facilitator URL is configured, use it to submit transfer_from on-chain.
             // Falls back to passive RPC polling when only the node URL is set (backwards compat).
-            const baseReader = env.CASPER_GUARD_FACILITATOR_URL !== ''
+            const baseReader = fields.facilitatorUrl !== ''
               ? createFacilitatorSettlementReaderFromConfig(
-                  env.CASPER_GUARD_FACILITATOR_URL,
+                  fields.facilitatorUrl,
                   env.CSPR_CLOUD_ACCESS_TOKEN,
                   deployReader,
                 )
@@ -82,39 +180,30 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
         }
       : {}),
     odra: odraConfigured
-      ? { configured: true }
+      ? { configured: true, contractPackage: fields.odraPackageHash }
       : { configured: false, reason: 'odra_contract_not_bound' },
     ...(odraConfigured
       ? {
           anchorer: createOdraGuardRegistryAnchorer({
-            packageHash: env.CASPER_GUARD_ODRA_PACKAGE_HASH,
+            packageHash: fields.odraPackageHash,
             entryPoint: env.CASPER_GUARD_ODRA_ENTRY_POINT,
             // SEAM: swap createLiveCasperDeploySubmitter for a real client once contract is deployed
             submitter: createLiveCasperDeploySubmitter({
-              rpcUrl: env.CASPER_GUARD_ODRA_RPC_URL,
-              pemPath: resolvePemPath(env) ?? '',
-              algorithm: env.CASPER_GUARD_ODRA_ALGORITHM,
-              chainName: env.CASPER_GUARD_ODRA_CHAIN_NAME,
+              rpcUrl: fields.odraRpcUrl,
+              pemPath: signerPemPath ?? '',
+              algorithm: fields.odraAlgorithm,
+              chainName: fields.chainName,
             }),
           }),
         }
       : {}),
-    trade: {
-      maxSlippageBps: env.CSPR_TRADE_MAX_SLIPPAGE_BPS,
-      allowedRiskLabels: parseCsv(env.CSPR_TRADE_ALLOWED_RISK_LABELS),
-    },
-    // LiveCsprTradeClient: real mcp.cspr.trade quote + sign + submit (MCP SSE session now handled).
-    // Falls back to UnavailableCsprTradeClient when required config is absent.
     tradeExecutor: (() => {
-      const tradePubKey = env.CSPR_TRADE_SENDER_PUBLIC_KEY || env.CASPER_GUARD_SENDER_PUBLIC_KEY;
-      const tradePemPath = resolveTradePemPath(env) || resolvePemPath(env) || '';
-      const tradeAvailable = env.CSPR_TRADE_MCP_URL !== '' && tradePubKey !== '' && tradePemPath !== '';
       const client = createLiveCsprTradeClient({
-            mcpUrl: env.CSPR_TRADE_MCP_URL !== '' ? env.CSPR_TRADE_MCP_URL : undefined,
-            senderPublicKey: tradePubKey || undefined,
-            pemPath: tradePemPath || undefined,
-            algorithm: env.CSPR_TRADE_SIGNER_PEM_PATH !== '' ? env.CSPR_TRADE_SIGNER_ALGORITHM : env.CASPER_GUARD_SIGNER_ALGORITHM,
-          });
+        mcpUrl: fields.tradeMcpUrl !== '' ? fields.tradeMcpUrl : undefined,
+        senderPublicKey: tradePubKey || undefined,
+        pemPath: tradePemPath || undefined,
+        algorithm: tradeAlgorithm,
+      });
       const executor = createCsprTradeExecutor({
         policy: {
           maxSlippageBps: env.CSPR_TRADE_MAX_SLIPPAGE_BPS,
@@ -124,6 +213,48 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
       });
       return { available: tradeAvailable, ...executor };
     })(),
+  };
+}
+
+export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
+  const serviceDestinations = parseServiceDestinations(env.CASPER_GUARD_SERVICE_DESTINATIONS);
+  const enabledNetworks = parseNetworks(env.CASPER_GUARD_NETWORKS);
+
+  const testnetFields = testnetSlotEnvFields(env);
+  const testnetSlot = buildNetworkSlot(testnetFields, env);
+
+  const byNetwork: CasperGuardDeps['byNetwork'] = {
+    'casper:casper-test': testnetSlot,
+  };
+  if (enabledNetworks.includes('casper:casper')) {
+    const mainnetFields = mainnetSlotEnvFields(env);
+    const mainnetOdraConfigured = mainnetFields.odraPackageHash !== '' && mainnetFields.odraRpcUrl !== '';
+    const mainnetSignerConfigured =
+      mainnetFields.signerMode !== 'disabled' &&
+      (mainnetFields.signerPemPath !== '' || mainnetFields.signerPemInline !== '');
+    if (mainnetOdraConfigured || mainnetSignerConfigured) {
+      byNetwork['casper:casper'] = buildNetworkSlot(mainnetFields, env);
+    }
+  }
+
+  return {
+    networks: enabledNetworks,
+    ...(serviceDestinations ? { serviceDestinations } : {}),
+    mcpUrl: env.CASPER_GUARD_MCP_URL,
+    trade: {
+      maxSlippageBps: env.CSPR_TRADE_MAX_SLIPPAGE_BPS,
+      allowedRiskLabels: parseCsv(env.CSPR_TRADE_ALLOWED_RISK_LABELS),
+    },
+    byNetwork,
+    // legacy top-level fields mirror the testnet slot — kept until all route call sites migrate
+    ...(testnetSlot.signer ? { signer: testnetSlot.signer } : {}),
+    liveSettlement: testnetSlot.liveSettlement ?? { configured: false, reason: 'casper_facilitator_not_configured' },
+    ...(testnetSlot.settlementReaderFactory
+      ? { settlementReaderFactory: testnetSlot.settlementReaderFactory }
+      : {}),
+    odra: testnetSlot.odra ?? { configured: false, reason: 'odra_contract_not_bound' },
+    ...(testnetSlot.anchorer ? { anchorer: testnetSlot.anchorer } : {}),
+    tradeExecutor: testnetSlot.tradeExecutor!,
   };
 }
 
@@ -155,49 +286,6 @@ export function createCasperGuardRuntimeSigner(
       return { signedHeaderHash: `sha256:${sha256(bytesToHex(signature))}` };
     },
   };
-}
-
-function resolvePemPath(env: Env): string | undefined {
-  if (env.CASPER_GUARD_SIGNER_PEM_PATH !== '') return env.CASPER_GUARD_SIGNER_PEM_PATH;
-  if (env.CASPER_GUARD_SIGNER_PEM_INLINE !== '') {
-    const pemContent = Buffer.from(env.CASPER_GUARD_SIGNER_PEM_INLINE, 'base64').toString('utf8');
-    const tmpPath = join(tmpdir(), 'casper_guard_signer.pem');
-    writeFileSync(tmpPath, pemContent, { mode: 0o600 });
-    return tmpPath;
-  }
-  return undefined;
-}
-
-function resolveTradePemPath(env: Env): string | undefined {
-  if (env.CSPR_TRADE_SIGNER_PEM_PATH !== '') return env.CSPR_TRADE_SIGNER_PEM_PATH;
-  if (env.CSPR_TRADE_SIGNER_PEM_INLINE !== '') {
-    const pemContent = Buffer.from(env.CSPR_TRADE_SIGNER_PEM_INLINE, 'base64').toString('utf8');
-    const tmpPath = join(tmpdir(), 'cspr_trade_signer.pem');
-    writeFileSync(tmpPath, pemContent, { mode: 0o600 });
-    return tmpPath;
-  }
-  return undefined;
-}
-
-function buildSigner(env: Env): CasperGuardSigner | undefined {
-  switch (env.CASPER_GUARD_SIGNER_MODE) {
-    case 'disabled':
-      return undefined;
-    case 'local-testnet': {
-      const pemPath = resolvePemPath(env);
-      if (!pemPath) return undefined;
-      return createCasperGuardRuntimeSigner(
-        CasperSignerProvider.localTestnet({
-          pemPath,
-          algorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
-        }),
-      );
-    }
-    case 'operator-wallet':
-      return undefined;
-    case 'enterprise-custody':
-      return undefined;
-  }
 }
 
 function paymentRequiredFromIntent(intent: Extract<CasperGuardIntent, { kind: 'x402-payment' }>): PaymentRequired {
