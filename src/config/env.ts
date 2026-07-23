@@ -16,26 +16,11 @@ const EnvSchema = z.object({
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
 
-  ARC_RPC_URL: z.string().url(),
-  ARC_CHAIN_ID: z.coerce.number().int().positive(),
-  // Live Arc reads gate. OFF by default; `true` swaps the hot-path EIP-712 domain source from the known
-  // USDC v2 constant to the viem-backed EIP-5267 live read (buildHotPath). The live read fails closed.
-  ARC_LIVE: z.enum(['true', 'false']).default('false'),
-  ARC_USDC_ADDRESS: z.string().regex(/^0x[0-9a-fA-F]{40}$/, 'must be a 20-byte hex address'),
-  GATEWAY_WALLET_ADDRESS: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
-  GATEWAY_MINTER_ADDRESS: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
   SOLANA_RPC_URL: z.string().url().or(z.literal('')).default(''),
 
   KMS_PROVIDER: z.enum(['local', 'aws']).default('local'),
   KMS_TREASURY_KEY_ID: z.string().default(''),
   KMS_AGENT_FLOAT_KEY_ID: z.string().default(''),
-
-  CIRCLE_API_BASE: z.string().url().default('https://api.circle.com'),
-  CIRCLE_API_KEY: z.string().default(''),
-  // Explicit opt-in for the REAL Circle Gateway transport. A key may be present for other Circle use
-  // WITHOUT routing treasury through Gateway — the Gateway protocol (on-chain deposit/attestation/mint)
-  // must be integrated first. Default false keeps treasury on the working local transport.
-  CIRCLE_GATEWAY_LIVE: z.enum(['true', 'false']).default('false'),
 
   // CasperHacks product surface. Defaults are honest-blocked: routes boot, report what is missing, and
   // signing/settlement fail closed until a real testnet key or live integration is supplied.
