@@ -1,62 +1,70 @@
 /**
  * Associated-key argument builders for the delegation lifecycle (D-1, D-2).
  *
- * SCOPE NOTE: Casper's `update_associated_keys` is not a native Transaction type in
- * casper-js-sdk v5 (no `Native*Builder` for it, unlike transfer/delegate/bid). It requires a
- * session Wasm module calling the `add_associated_key` / `set_action_threshold` host functions,
- * submitted via `SessionBuilder.wasm(bytes)`. This repo has no such Wasm bundled and the exact
- * host-function arg names are unverified — sourcing/compiling that Wasm and confirming its args
- * is a spike (same treatment as the CSPR.trade D-7 spike already flagged in BUILD-ORDER.md).
+ * Matches the real, verified session contracts in `contracts/delegation/` (grant-delegated-key,
+ * revoke-delegated-key) — see that directory's README for the full verification log: both
+ * contracts were built and tested end-to-end against a real Casper testnet account (grant, agent
+ * transacts alone, revoke, revoked key rejected outright by the node).
  *
- * This module builds ONLY the verified, pure part: the weight/threshold arguments per D-2①/D-2④.
- * The deploy-assembly step (wiring these args + injected wasmBytes into a SessionBuilder,
- * unsigned) is intentionally NOT implemented here until the Wasm source is confirmed.
+ * The grant contract deliberately does NOT match Casper's own two-party-multi-sig reference
+ * (a balanced 2-of-2 scheme). D-2① wants asymmetric delegation: the agent's key can transact
+ * ALONE (deploy threshold stays low) but can never alone perform key-management. Naively raising
+ * only the key-management threshold — without also raising the master's own weight — would brick
+ * the account (a default account's own key starts at weight 1; agent(1) + master(1) can never
+ * reach a threshold of 3). So the grant contract ALSO bumps the master's own weight
+ * (`master_weight`) in the same deploy.
  */
 
 export const GRANT_THRESHOLDS = {
+  /** The master's own new weight — high enough to alone satisfy keyManagementThreshold below,
+   * so the account is never bricked even if the agent's weight-1 key were somehow unavailable. */
+  masterWeight: 3,
   deployThreshold: 1,
   keyManagementThreshold: 3,
 } as const;
 
 export interface AssociatedKeyDeployInput {
-  masterAccount: string;
-  agentPublicKey: string;
+  masterAccountHash: string;
+  agentAccountHash: string;
 }
 
+/** Matches grant-delegated-key.wasm's session args exactly (contracts/delegation/). */
 export interface GrantDeployArgs {
-  account: string;
-  weight: 1;
-  action_threshold_deployment: number;
-  action_threshold_key_management: number;
+  agent_account_hash: string;
+  master_weight: number;
+  key_management_threshold: number;
+  deployment_threshold: number;
 }
 
+/** Matches revoke-delegated-key.wasm's session args exactly — it calls remove_associated_key,
+ * so no weight/threshold fields are needed. */
 export interface RevokeDeployArgs {
-  account: string;
-  weight: 0;
+  agent_account_hash: string;
 }
 
-/** D-2①: agent key at weight 1, deploy threshold 1, key-management threshold 3. */
+/** D-2①: agent key at weight 1 (set by the contract itself), master bumped to weight 3, deploy
+ * threshold 1, key-management threshold 3. */
 export function buildGrantDeployArgs(input: AssociatedKeyDeployInput): GrantDeployArgs {
   return {
-    account: input.agentPublicKey,
-    weight: 1,
-    action_threshold_deployment: GRANT_THRESHOLDS.deployThreshold,
-    action_threshold_key_management: GRANT_THRESHOLDS.keyManagementThreshold,
+    agent_account_hash: input.agentAccountHash,
+    master_weight: GRANT_THRESHOLDS.masterWeight,
+    key_management_threshold: GRANT_THRESHOLDS.keyManagementThreshold,
+    deployment_threshold: GRANT_THRESHOLDS.deployThreshold,
   };
 }
 
-/** D-2④: zero exactly the given key's weight. Thresholds are left untouched. */
+/** D-2④: remove the given key entirely (not a weight-0 update — see revoke-delegated-key's own
+ * doc comment for why removal is the unambiguous choice). Thresholds are left untouched. */
 export function buildRevokeDeployArgs(input: AssociatedKeyDeployInput): RevokeDeployArgs {
   return {
-    account: input.agentPublicKey,
-    weight: 0,
+    agent_account_hash: input.agentAccountHash,
   };
 }
 
 export interface UnsignedGrantDeploy {
   kind: 'update_associated_keys_grant';
-  masterAccount: string;
-  agentPublicKey: string;
+  masterAccountHash: string;
+  agentAccountHash: string;
   args: GrantDeployArgs;
 }
 
@@ -67,8 +75,8 @@ export interface UnsignedGrantDeploy {
 export function buildGrantDeployForBrowserSigning(input: AssociatedKeyDeployInput): UnsignedGrantDeploy {
   return {
     kind: 'update_associated_keys_grant',
-    masterAccount: input.masterAccount,
-    agentPublicKey: input.agentPublicKey,
+    masterAccountHash: input.masterAccountHash,
+    agentAccountHash: input.agentAccountHash,
     args: buildGrantDeployArgs(input),
   };
 }

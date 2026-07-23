@@ -1,0 +1,7 @@
+[toolchain]
+# Pinned: casper-contract 5.1.1 uses unstable feature(alloc_error_handler, core_intrinsics,
+# lang_items), which recent nightlies reject (a #[no_mangle] panic-handler lang-item conflict).
+# nightly-2026-06-22 (the default installed nightly at the time this was built) failed; this date
+# is verified to build both contracts cleanly.
+channel = "nightly-2025-01-15"
+targets = ["wasm32-unknown-unknown"]
