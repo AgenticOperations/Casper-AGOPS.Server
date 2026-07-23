@@ -8,7 +8,6 @@ import type { KmsSigner } from './lib/kms/signer.js';
 import type { KnownTokenRegistry, TokenDomainSource } from './lib/eip712/domain.js';
 import type { DomainRegistry } from './engines/identity/domain-binding.js';
 import type { GatewayClient } from './lib/circle/gateway.js';
-import { registerAuthorizeRoute } from './engines/oracle/authorize.js';
 import { registerMonitoringRoutes } from './engines/monitoring/routes.js';
 import { registerControlRoutes } from './engines/control/routes.js';
 import { registerTreasuryRoutes } from './engines/control/treasury-routes.js';
@@ -146,8 +145,6 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     arc: deps.env.ARC_LIVE === 'true' ? 'live' : 'local',
   }));
 
-  // E9 Oracle — the agent-egress authorize surface.
-  registerAuthorizeRoute(app);
   // E8 Monitoring — read-side decision feed + the P1-actuated graded brakes (off the hot path).
   registerMonitoringRoutes(app);
   // E1 Control — Group A read surface (org summary). Off the hot path; admin-key authed.
