@@ -124,9 +124,36 @@ describe('AgentOps MCP route', () => {
       'casper_guard_reconcile',
       'casper_guard_legal_context',
       'casper_guard_list_services',
+      'casper_guard_create_agent',
+      'casper_guard_attach_trading_flow',
+      'casper_guard_revoke_agent',
     ]);
     expect(body.result.tools[1]).toMatchObject({
       name: 'casper_guard_authorize_payment',
+      inputSchema: { type: 'object' },
+    });
+  });
+
+  it('the F.2 fleet-management tools (create_agent, attach_trading_flow, revoke_agent) have valid object schemas', async () => {
+    if (!app) return;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/casper-guard/mcp',
+      payload: { jsonrpc: '2.0', id: 'tools', method: 'tools/list' },
+    });
+    const body = res.json<ToolsListResponse>();
+    const byName = Object.fromEntries(body.result.tools.map((t) => [t.name, t]));
+
+    expect(byName['casper_guard_create_agent']).toMatchObject({
+      name: 'casper_guard_create_agent',
+      inputSchema: { type: 'object' },
+    });
+    expect(byName['casper_guard_attach_trading_flow']).toMatchObject({
+      name: 'casper_guard_attach_trading_flow',
+      inputSchema: { type: 'object' },
+    });
+    expect(byName['casper_guard_revoke_agent']).toMatchObject({
+      name: 'casper_guard_revoke_agent',
       inputSchema: { type: 'object' },
     });
   });
