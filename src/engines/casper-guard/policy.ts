@@ -3,6 +3,7 @@ import type pg from 'pg';
 import type { Redis } from 'ioredis';
 import { releaseHold, reserveHoldWithinPolicy, windowSum, snapshotWindows } from '../ledger/window.js';
 import { keys } from '../../redis/keyspace.js';
+import { isAgentSuspended } from '../control/kill-switch.js';
 import type {
   CasperGuardActionKind,
   CasperGuardIntent,
@@ -29,6 +30,7 @@ export type CasperGuardDenyReason =
   | 'service_scope_destination_mismatch'
   | 'velocity_exceeded'
   | 'org_suspended'
+  | 'agent_suspended'
   | 'trade_risk_exceeded'
   | 'idempotency_in_progress'
   | 'idempotency_conflict'
@@ -214,6 +216,11 @@ export async function authorizeCasperGuardIntent(
       if ((await deps.redis.exists(keys.denyAll(params.orgId))) === 1) {
         await failReservedDecision(deps, params);
         return { outcome: 'DENY', decisionId: params.decisionId, reason: 'org_suspended' };
+      }
+
+      if (await isAgentSuspended(deps.pool, { agentId: params.agentId, orgId: params.orgId })) {
+        await failReservedDecision(deps, params);
+        return { outcome: 'DENY', decisionId: params.decisionId, reason: 'agent_suspended' };
       }
 
       const signed = await deps.signer.sign({
