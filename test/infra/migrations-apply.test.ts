@@ -156,4 +156,49 @@ describe('schema migrations', () => {
       ),
     ).rejects.toThrow();
   });
+
+  it('applies 0014_delegated_keys: enforces a single ACTIVE key per agent', async ({ skip }) => {
+    if (!dockerAvailable || !pool) return skip();
+    await runMigrations(pool); // idempotent: ensure 0014 is applied
+
+    const applied = await pool.query<{ id: string }>('SELECT id FROM schema_migrations');
+    expect(applied.rows.map((r) => r.id)).toContain('0014_delegated_keys');
+
+    await pool.query(
+      `INSERT INTO orgs (id, name, admin_key_hash) VALUES ('org_dk_test', 'Delegated Key Test Org', 'hash')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    await pool.query(
+      `INSERT INTO agents (id, org_id, api_key_hash) VALUES ('agt_dk_test', 'org_dk_test', 'hash')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+
+    await pool.query(
+      `INSERT INTO delegated_keys (id, agent_id, public_key) VALUES ('dk_1', 'agt_dk_test', 'pub_1')`,
+    );
+
+    // A second ACTIVE key for the same agent must violate the partial unique index.
+    await expect(
+      pool.query(
+        `INSERT INTO delegated_keys (id, agent_id, public_key) VALUES ('dk_2', 'agt_dk_test', 'pub_2')`,
+      ),
+    ).rejects.toThrow();
+
+    // Rotating (mark old ROTATED, insert new ACTIVE) leaves exactly one ACTIVE row.
+    await pool.query(`UPDATE delegated_keys SET status = 'ROTATED' WHERE id = 'dk_1'`);
+    await pool.query(
+      `INSERT INTO delegated_keys (id, agent_id, public_key) VALUES ('dk_2', 'agt_dk_test', 'pub_2')`,
+    );
+    const activeAfterRotate = await pool.query(
+      `SELECT id FROM delegated_keys WHERE agent_id = 'agt_dk_test' AND status = 'ACTIVE'`,
+    );
+    expect(activeAfterRotate.rows.map((r: { id: string }) => r.id)).toEqual(['dk_2']);
+
+    // Revoking leaves zero ACTIVE.
+    await pool.query(`UPDATE delegated_keys SET status = 'REVOKED', revoked_at = now() WHERE id = 'dk_2'`);
+    const activeAfterRevoke = await pool.query(
+      `SELECT id FROM delegated_keys WHERE agent_id = 'agt_dk_test' AND status = 'ACTIVE'`,
+    );
+    expect(activeAfterRevoke.rowCount).toBe(0);
+  });
 });
