@@ -19,6 +19,7 @@ import { registerMeRoutes } from './engines/identity/account/me-routes.js';
 import { registerOrgRoutes } from './engines/identity/org/org-routes.js';
 import { registerMembersRoutes } from './engines/identity/org/members-routes.js';
 import { registerAgentLifecycleRoutes } from './engines/identity/org/agent-routes.js';
+import { registerDelegationRoutes } from './engines/identity/delegation/delegation-routes.js';
 import { registerApiKeyRoutes } from './engines/identity/access/api-key-routes.js';
 import { registerEmailRoutes } from './engines/identity/account/email-routes.js';
 import { registerOAuthRoutes } from './engines/identity/oauth/oauth-routes.js';
@@ -174,6 +175,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerOAuthRoutes(app);
   // P1 Identity — agent lifecycle (create/rename/retire/rotate-key, admin+, tenant-fenced). ag_ shown once.
   registerAgentLifecycleRoutes(app);
+  // Phase 2 SDK+proxy — trading flow attach + full delegated-key revoke (Milestones D, A+C).
+  registerDelegationRoutes(app);
   // CasperHacks — AgentOps policy/firewall/audit product surface.
   registerCasperGuardRoutes(app);
   registerCasperGuardMcpRoute(app);

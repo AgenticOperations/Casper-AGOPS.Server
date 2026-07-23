@@ -19,6 +19,7 @@ export default defineConfig({
       'test/control/ids.test.ts',
       'test/control/is-agent-suspended.test.ts',
       'test/control/policy-routes.test.ts',
+      'test/control/attach-trading-flow.test.ts',
       'test/control/trading-flow.test.ts',
       'test/custody/**/*.test.ts',
       'test/identity/**/*.test.ts',
