@@ -64,6 +64,22 @@ const EnvSchema = z.object({
   CASPER_GUARD_ODRA_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('secp256k1'),
   // Chain name for the Odra anchor deploy. 'casper-test' = testnet, 'casper' = mainnet.
   CASPER_GUARD_ODRA_CHAIN_NAME: z.enum(['casper-test', 'casper']).default('casper-test'),
+
+  // --- Mainnet-slot siblings. Empty = mainnet not configured (mainnet toggle 503s honestly). ---
+  CASPER_GUARD_MAINNET_SIGNER_PEM_PATH: z.string().default(''),
+  CASPER_GUARD_MAINNET_SIGNER_PEM_INLINE: z.string().default(''),
+  CASPER_GUARD_MAINNET_SIGNER_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('ed25519'),
+  CASPER_GUARD_MAINNET_ODRA_PACKAGE_HASH: z.string().regex(/^[0-9a-fA-F]{64}$/).or(z.literal('')).default(''),
+  CASPER_GUARD_MAINNET_ODRA_RPC_URL: z.string().url().or(z.literal('')).default(''),
+  CASPER_GUARD_MAINNET_ODRA_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('ed25519'),
+  CASPER_GUARD_MAINNET_FACILITATOR_RPC_URL: z.string().url().or(z.literal('')).default(''),
+  CASPER_GUARD_MAINNET_FACILITATOR_URL: z.string().url().or(z.literal('')).default(''),
+  CSPR_TRADE_MAINNET_MCP_URL: z.string().url().or(z.literal('')).default(''),
+  CSPR_TRADE_MAINNET_SENDER_PUBLIC_KEY: z.string().default(''),
+  CSPR_TRADE_MAINNET_SIGNER_PEM_PATH: z.string().default(''),
+  CSPR_TRADE_MAINNET_SIGNER_PEM_INLINE: z.string().default(''),
+  CSPR_TRADE_MAINNET_SIGNER_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('ed25519'),
+
   // Casper operator account hash (64 hex, no prefix). Used as the AllocationPolicy allowedDestinations
   // float fence on Casper — replaces the EVM agent-float address that Arc used.
   CASPER_OPERATOR_ACCOUNT_HASH: z

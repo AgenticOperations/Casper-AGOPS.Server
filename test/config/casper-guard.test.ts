@@ -45,6 +45,20 @@ interface CreateHeaderInput {
 }
 
 describe('AgentOps runtime config', () => {
+  it('defaults mainnet-slot env vars to empty string when unset', () => {
+    const env = loadEnv(BASE_ENV);
+    expect(env.CASPER_GUARD_MAINNET_SIGNER_PEM_PATH).toBe('');
+    expect(env.CASPER_GUARD_MAINNET_SIGNER_PEM_INLINE).toBe('');
+    expect(env.CASPER_GUARD_MAINNET_ODRA_PACKAGE_HASH).toBe('');
+    expect(env.CASPER_GUARD_MAINNET_ODRA_RPC_URL).toBe('');
+    expect(env.CASPER_GUARD_MAINNET_FACILITATOR_RPC_URL).toBe('');
+    expect(env.CASPER_GUARD_MAINNET_FACILITATOR_URL).toBe('');
+    expect(env.CSPR_TRADE_MAINNET_MCP_URL).toBe('');
+    expect(env.CSPR_TRADE_MAINNET_SENDER_PUBLIC_KEY).toBe('');
+    expect(env.CSPR_TRADE_MAINNET_SIGNER_PEM_PATH).toBe('');
+    expect(env.CSPR_TRADE_MAINNET_SIGNER_PEM_INLINE).toBe('');
+  });
+
   it('is honest by default: no signer, settlement blocked, Odra blocked', () => {
     const env = loadEnv(BASE_ENV);
     const deps = buildCasperGuardDeps(env);
