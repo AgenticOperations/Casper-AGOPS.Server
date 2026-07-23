@@ -15,6 +15,8 @@ export default defineConfig({
       'test/casper-guard/**/*.test.ts',
       'test/lcp/**/*.test.ts',
       'test/config/casper-guard.test.ts',
+      'test/config/casper-guard-vault-wiring.test.ts',
+      'test/config/env-vault-secret.test.ts',
       'test/control/default-org-policies.test.ts',
       'test/control/ids.test.ts',
       'test/control/is-agent-suspended.test.ts',

@@ -201,4 +201,43 @@ describe('schema migrations', () => {
     );
     expect(activeAfterRevoke.rowCount).toBe(0);
   });
+
+  it('applies 0015_agent_vault_keys: one upsertable row per agent, independent of delegated_keys', async ({
+    skip,
+  }) => {
+    if (!dockerAvailable || !pool) return skip();
+    await runMigrations(pool); // idempotent: ensure 0015 is applied
+
+    const applied = await pool.query<{ id: string }>('SELECT id FROM schema_migrations');
+    expect(applied.rows.map((r) => r.id)).toContain('0015_agent_vault_keys');
+
+    await pool.query(
+      `INSERT INTO orgs (id, name, admin_key_hash) VALUES ('org_vk_test', 'Vault Key Test Org', 'hash')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    await pool.query(
+      `INSERT INTO agents (id, org_id, api_key_hash) VALUES ('agt_vk_test', 'org_vk_test', 'hash')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+
+    // No delegated_keys row needed at all — agent_vault_keys is independent.
+    await pool.query(
+      `INSERT INTO agent_vault_keys (agent_id, encrypted_private_key) VALUES ('agt_vk_test', 'blob_v1')`,
+    );
+    const first = await pool.query<{ encrypted_private_key: string }>(
+      `SELECT encrypted_private_key FROM agent_vault_keys WHERE agent_id = 'agt_vk_test'`,
+    );
+    expect(first.rows[0]?.encrypted_private_key).toBe('blob_v1');
+
+    // Upsert on conflict (rotation writes a new blob for the same agent).
+    await pool.query(
+      `INSERT INTO agent_vault_keys (agent_id, encrypted_private_key) VALUES ('agt_vk_test', 'blob_v2')
+       ON CONFLICT (agent_id) DO UPDATE SET encrypted_private_key = EXCLUDED.encrypted_private_key`,
+    );
+    const second = await pool.query<{ encrypted_private_key: string }>(
+      `SELECT encrypted_private_key FROM agent_vault_keys WHERE agent_id = 'agt_vk_test'`,
+    );
+    expect(second.rows).toHaveLength(1);
+    expect(second.rows[0]?.encrypted_private_key).toBe('blob_v2');
+  });
 });

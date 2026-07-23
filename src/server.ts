@@ -31,7 +31,7 @@ async function main(): Promise<void> {
     pg: pgPool,
     redis,
     gateway,
-    casperGuard: buildCasperGuardDeps(env),
+    casperGuard: buildCasperGuardDeps(env, { pool: pgPool }),
   });
 
   const worker = startConfirmationWorker(

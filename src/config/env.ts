@@ -36,6 +36,10 @@ const EnvSchema = z.object({
   CASPER_GUARD_SIGNER_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('ed25519'),
   CASPER_GUARD_NETWORKS: z.string().min(1).default('casper:casper-test'),
   CASPER_GUARD_MCP_URL: z.string().min(1).default('/v1/casper-guard/mcp'),
+  // Milestone B (D-3): master secret the EncryptedStoreVault derives its AES-256-GCM key from.
+  // Empty = per-agent delegated signing is unavailable; every authorize falls back to the
+  // existing custodial CasperSignerProvider (unchanged behavior for agents with no delegated key).
+  CASPER_GUARD_VAULT_MASTER_SECRET: z.string().default(''),
   CASPER_GUARD_FACILITATOR_RPC_URL: z.string().url().or(z.literal('')).default(''),
   CASPER_GUARD_FACILITATOR_URL: z.string().url().or(z.literal('')).default(''),
   CSPR_CLOUD_ACCESS_TOKEN: z.string().default(''),
