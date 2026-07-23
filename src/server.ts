@@ -2,10 +2,7 @@ import { loadEnv } from './config/env.js';
 import { createPgPool } from './db/client.js';
 import { createRedis } from './redis/client.js';
 import { buildApp } from './app.js';
-import { GatewayClient } from './lib/circle/gateway.js';
-import { createStubTransport } from './lib/circle/stub-transport.js';
-import { createHttpTransport } from './lib/circle/http-transport.js';
-import { buildHotPath } from './config/hotpath.js';
+import { createCasperTreasuryClient } from './lib/casper/treasury-client.js';
 import { buildCasperGuardDeps } from './config/casper-guard.js';
 import { sweepPendingConfirmations } from './engines/provisioning/confirm-sweep.js';
 import { startConfirmationWorker } from './engines/provisioning/confirm-worker.js';
@@ -23,26 +20,19 @@ async function main(): Promise<void> {
   const pgPool = createPgPool(env);
   const redis = createRedis(env);
 
-  // Honest, credential-gated Circle boundary: the REAL authenticated HTTP transport is selected ONLY on
-  // an explicit opt-in (CIRCLE_GATEWAY_LIVE=true) AND a present key — so a key configured for other Circle
-  // use cannot silently route treasury through Gateway before the on-chain Gateway protocol is integrated.
-  // Otherwise we fall back to the always-final Redis stub. We NEVER silently pretend to be live. `mode` is
-  // the only thing logged below — the key itself is never serialized. 'live' = real Circle HTTP; 'local' = stub.
-  const circleLive = env.CIRCLE_GATEWAY_LIVE === 'true' && env.CIRCLE_API_KEY !== '';
-  const gateway = new GatewayClient(
-    circleLive
-      ? createHttpTransport({ apiBase: env.CIRCLE_API_BASE, apiKey: env.CIRCLE_API_KEY })
-      : createStubTransport(redis),
-  );
+  const gateway = createCasperTreasuryClient({
+    rpcUrl: env.CASPER_GUARD_FACILITATOR_RPC_URL || env.CASPER_GUARD_ODRA_RPC_URL,
+    operatorAccountHash: env.CASPER_OPERATOR_ACCOUNT_HASH,
+    pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH,
+    algorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
+  });
   const app = buildApp({
     env,
     pg: pgPool,
     redis,
     gateway,
-    hotPath: buildHotPath(env),
     casperGuard: buildCasperGuardDeps(env),
   });
-  app.log.info({ mode: circleLive ? 'live' : 'local' }, 'circle gateway transport');
 
   const worker = startConfirmationWorker(
     { now: () => Math.floor(Date.now() / 1000) },

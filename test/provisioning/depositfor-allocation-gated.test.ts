@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { GatewayClient, type GatewayTransport } from '../../src/lib/circle/gateway.js';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import type { CasperTreasuryClient } from '../../src/lib/casper/treasury-client.js';
 import { depositFor, type ProvisionDeps } from '../../src/engines/provisioning/deposit.js';
 import { keys } from '../../src/redis/keyspace.js';
 import { computeSpendable } from '../../src/engines/custody/balance.js';
@@ -27,26 +27,36 @@ import {
 
 const NOW = 1_750_000_000;
 
-/** A recording Circle transport that returns a fixed op id; exercises the real GatewayClient wrapper. */
-function recordingGateway(): { gateway: GatewayClient; calls: Array<{ path: string; body?: unknown }> } {
+/** A recording Casper treasury client stub that returns a fixed op id; exercises the depositFor call shape. */
+function recordingGateway(): { gateway: CasperTreasuryClient; calls: Array<{ path: string; body?: unknown }> } {
   const calls: Array<{ path: string; body?: unknown }> = [];
-  const transport: GatewayTransport = {
-    request<T>(req: { method: 'GET' | 'POST'; path: string; body?: unknown }): Promise<T> {
-      calls.push({ path: req.path, body: req.body });
-      return Promise.resolve({ id: 'gw_tx_1' } as T);
-    },
+  const gateway: CasperTreasuryClient = {
+    getBalances: vi.fn(),
+    deposit: vi.fn(),
+    depositFor: vi.fn(async (params: { orgId: string; agentId: string; amount: bigint }) => {
+      calls.push({
+        path: '/v1/gateway/deposit-for',
+        body: { orgId: params.orgId, agentId: params.agentId, amount: params.amount.toString() },
+      });
+      return { id: 'gw_tx_1' };
+    }),
+    reclaimFor: vi.fn(),
+    isFinal: vi.fn(),
   };
-  return { gateway: new GatewayClient(transport), calls };
+  return { gateway, calls };
 }
 
-/** A Circle transport that always fails — to assert the reserve is compensated on a submit error. */
-function failingGateway(): GatewayClient {
-  const transport: GatewayTransport = {
-    request<T>(): Promise<T> {
-      return Promise.reject(new Error('gateway 503'));
-    },
+/** A Casper treasury client stub that always fails — to assert the reserve is compensated on a submit error. */
+function failingGateway(): CasperTreasuryClient {
+  return {
+    getBalances: vi.fn(),
+    deposit: vi.fn(),
+    depositFor: vi.fn(async () => {
+      throw new Error('gateway 503');
+    }),
+    reclaimFor: vi.fn(),
+    isFinal: vi.fn(),
   };
-  return new GatewayClient(transport);
 }
 
 let stores: Stores | null = null;

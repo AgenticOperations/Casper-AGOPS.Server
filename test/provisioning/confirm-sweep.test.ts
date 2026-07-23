@@ -1,22 +1,22 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startStores, stopStores, usdc, type Stores } from '../helpers/oracle-harness.js';
 import { seedAgent } from '../helpers/oracle-harness.js';
-import { GatewayClient, type GatewayTransport } from '../../src/lib/circle/gateway.js';
+import { vi } from 'vitest';
+import type { CasperTreasuryClient } from '../../src/lib/casper/treasury-client.js';
 import { depositFor, type ProvisionDeps } from '../../src/engines/provisioning/deposit.js';
 import { sweepPendingConfirmations } from '../../src/engines/provisioning/confirm-sweep.js';
 import { keys } from '../../src/redis/keyspace.js';
 
-function controllableGateway(): { gateway: GatewayClient; setFinal: (v: boolean) => void } {
+function controllableGateway(): { gateway: CasperTreasuryClient; setFinal: (v: boolean) => void } {
   let final = false;
-  const transport: GatewayTransport = {
-    request<T>(req: { method: 'GET' | 'POST'; path: string; body?: unknown }): Promise<T> {
-      if (req.path === '/v1/gateway/deposit-for') return Promise.resolve({ id: 'gw_tx_1' } as T);
-      if (req.path.startsWith('/v1/gateway/operations/'))
-        return Promise.resolve({ status: final ? 'complete' : 'pending' } as T);
-      return Promise.reject(new Error(`unexpected ${req.path}`));
-    },
+  const gateway: CasperTreasuryClient = {
+    getBalances: vi.fn(),
+    deposit: vi.fn(),
+    depositFor: vi.fn(async () => ({ id: 'gw_tx_1' })),
+    reclaimFor: vi.fn(),
+    isFinal: vi.fn(async () => final),
   };
-  return { gateway: new GatewayClient(transport), setFinal: (v) => { final = v; } };
+  return { gateway, setFinal: (v) => { final = v; } };
 }
 
 let stores: Stores | null = null;
