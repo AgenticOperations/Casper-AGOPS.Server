@@ -34,6 +34,11 @@ import {
   type CasperGuardIntent,
   type CasperGuardNetwork,
 } from './types.js';
+import {
+  CASPER_NETWORK_HEADER,
+  resolveRequestNetwork,
+  type CasperScopedNetwork,
+} from './network-header.js';
 
 export interface CasperGuardReadiness {
   configured: boolean;
@@ -153,6 +158,43 @@ const reconcileRequestSchema = z.object({
   settlement: settlementEvidenceSchema,
 });
 
+type NetworkSlotSelection =
+  | { ok: true; network: CasperScopedNetwork; slot: CasperGuardNetworkSlot }
+  | { ok: false; code: 400 | 503; error: 'invalid_network' | 'network_not_configured' };
+
+/**
+ * Resolve the request's network header, then select its config slot. Falls back to the legacy
+ * top-level deps fields for testnet when byNetwork is absent — this is what keeps every existing
+ * caller (and test) that never populated byNetwork working unchanged.
+ */
+export function selectNetworkSlot(
+  deps: CasperGuardDeps | undefined,
+  headerValue: string | string[] | undefined,
+): NetworkSlotSelection {
+  const resolved = resolveRequestNetwork(headerValue);
+  if (!resolved.ok) return { ok: false, code: 400, error: 'invalid_network' };
+
+  const slot = deps?.byNetwork?.[resolved.network];
+  if (slot?.signer) return { ok: true, network: resolved.network, slot };
+
+  if (resolved.network === 'casper:casper-test' && !deps?.byNetwork && deps?.signer) {
+    return {
+      ok: true,
+      network: resolved.network,
+      slot: {
+        signer: deps.signer,
+        ...(deps.liveSettlement ? { liveSettlement: deps.liveSettlement } : {}),
+        ...(deps.settlementReaderFactory ? { settlementReaderFactory: deps.settlementReaderFactory } : {}),
+        ...(deps.odra ? { odra: deps.odra } : {}),
+        ...(deps.anchorer ? { anchorer: deps.anchorer } : {}),
+        ...(deps.tradeExecutor ? { tradeExecutor: deps.tradeExecutor } : {}),
+      },
+    };
+  }
+
+  return { ok: false, code: 503, error: 'network_not_configured' };
+}
+
 export function registerCasperGuardRoutes(app: FastifyInstance): void {
   app.get('/v1/casper-guard/capabilities', async (request, reply) => {
     const auth = await authForRoute(app, request, 'member');
@@ -168,7 +210,8 @@ export function registerCasperGuardRoutes(app: FastifyInstance): void {
 
   app.post('/v1/casper-guard/authorize-x402', async (request, reply) => {
     const deps = app.deps.casperGuard;
-    if (!deps?.signer) return reply.code(503).send({ error: 'casper_guard_signer_not_configured' });
+    const selection = selectNetworkSlot(deps, request.headers[CASPER_NETWORK_HEADER]);
+    if (!selection.ok) return reply.code(selection.code).send({ error: selection.error });
 
     const auth = await authenticateAgent(app.deps.pg, request.headers.authorization);
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
@@ -185,8 +228,11 @@ export function registerCasperGuardRoutes(app: FastifyInstance): void {
     } catch {
       return reply.code(422).send({ error: 'invalid_casper_x402_requirements' });
     }
+    if (intent.network !== selection.network) {
+      return reply.code(409).send({ error: 'network_mismatch' });
+    }
 
-    const result = await authorizeWithStoredPolicy(app, deps, {
+    const result = await authorizeWithStoredPolicy(app, deps, selection.slot, {
       orgId: auth.agent.orgId,
       agentId: auth.agent.agentId,
       idempotencyKey: parsed.data.idempotency_key,
@@ -217,7 +263,8 @@ export function registerCasperGuardRoutes(app: FastifyInstance): void {
 
   app.post('/v1/casper-guard/authorize-action', async (request, reply) => {
     const deps = app.deps.casperGuard;
-    if (!deps?.signer) return reply.code(503).send({ error: 'casper_guard_signer_not_configured' });
+    const selection = selectNetworkSlot(deps, request.headers[CASPER_NETWORK_HEADER]);
+    if (!selection.ok) return reply.code(selection.code).send({ error: selection.error });
 
     const auth = await authenticateAgent(app.deps.pg, request.headers.authorization);
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
@@ -234,8 +281,11 @@ export function registerCasperGuardRoutes(app: FastifyInstance): void {
     } catch {
       return reply.code(422).send({ error: 'invalid_casper_guard_intent' });
     }
+    if (intent.network !== selection.network) {
+      return reply.code(409).send({ error: 'network_mismatch' });
+    }
 
-    const result = await authorizeWithStoredPolicy(app, deps, {
+    const result = await authorizeWithStoredPolicy(app, deps, selection.slot, {
       orgId: auth.agent.orgId,
       agentId: auth.agent.agentId,
       idempotencyKey: parsed.data.idempotency_key,
@@ -266,9 +316,15 @@ export function registerCasperGuardRoutes(app: FastifyInstance): void {
   app.get('/v1/casper-guard/decisions/:decisionId/audit', async (request, reply) => {
     const auth = await authForRoute(app, request, 'member');
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
+    const resolvedNetwork = resolveRequestNetwork(request.headers[CASPER_NETWORK_HEADER]);
+    if (!resolvedNetwork.ok) return reply.code(400).send({ error: 'invalid_network' });
     const { decisionId } = request.params as { decisionId: string };
     const decision = await readCasperGuardDecision(app.deps.pg, decisionId);
-    if (!decision || decision.orgId !== auth.principal.orgId) {
+    if (
+      !decision ||
+      decision.orgId !== auth.principal.orgId ||
+      decision.network !== resolvedNetwork.network
+    ) {
       return reply.code(404).send({ error: 'decision_not_found' });
     }
     return reply.code(200).send(auditExport(decision));
@@ -277,9 +333,15 @@ export function registerCasperGuardRoutes(app: FastifyInstance): void {
   app.get('/v1/casper-guard/decisions/:decisionId/status', async (request, reply) => {
     const auth = await authForRoute(app, request, 'member');
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
+    const resolvedNetwork = resolveRequestNetwork(request.headers[CASPER_NETWORK_HEADER]);
+    if (!resolvedNetwork.ok) return reply.code(400).send({ error: 'invalid_network' });
     const { decisionId } = request.params as { decisionId: string };
     const decision = await readCasperGuardDecision(app.deps.pg, decisionId);
-    if (!decision || decision.orgId !== auth.principal.orgId) {
+    if (
+      !decision ||
+      decision.orgId !== auth.principal.orgId ||
+      decision.network !== resolvedNetwork.network
+    ) {
       return reply.code(404).send({ error: 'decision_not_found' });
     }
     return reply.code(200).send(decisionStatusExport(decision));
@@ -287,6 +349,9 @@ export function registerCasperGuardRoutes(app: FastifyInstance): void {
 
   app.post('/v1/casper-guard/decisions/:decisionId/reconcile', async (request, reply) => {
     const deps = app.deps.casperGuard;
+    const selection = selectNetworkSlot(deps, request.headers[CASPER_NETWORK_HEADER]);
+    if (!selection.ok) return reply.code(selection.code).send({ error: selection.error });
+
     const auth = await authenticateAgent(app.deps.pg, request.headers.authorization);
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
 
@@ -295,7 +360,7 @@ export function registerCasperGuardRoutes(app: FastifyInstance): void {
     if (parsed.data.agent_id !== auth.agent.agentId) {
       return reply.code(403).send({ error: 'tenant_mismatch' });
     }
-    if (parsed.data.settlement.status === 'settled' && !deps?.anchorer) {
+    if (parsed.data.settlement.status === 'settled' && !selection.slot.anchorer) {
       return reply.code(503).send({ error: 'casper_guard_anchorer_unconfigured' });
     }
 
@@ -305,10 +370,10 @@ export function registerCasperGuardRoutes(app: FastifyInstance): void {
         {
           pool: app.deps.pg,
           redis: app.deps.redis,
-          settlementReader: deps?.settlementReaderFactory
-            ? composeSettlementReader(deps.settlementReaderFactory(), () => settlementRead(parsed.data.settlement))
+          settlementReader: selection.slot.settlementReaderFactory
+            ? composeSettlementReader(selection.slot.settlementReaderFactory(), () => settlementRead(parsed.data.settlement))
             : { read: () => Promise.resolve(settlementRead(parsed.data.settlement)) },
-          ...(deps?.anchorer ? { anchorer: deps.anchorer } : {}),
+          ...(selection.slot.anchorer ? { anchorer: selection.slot.anchorer } : {}),
         },
         { decisionId, agentId: auth.agent.agentId },
       );
@@ -355,7 +420,8 @@ export function intentFromPaymentRequired(paymentRequiredInput: unknown): Casper
 
 export async function authorizeWithStoredPolicy(
   app: FastifyInstance,
-  deps: CasperGuardDeps,
+  deps: CasperGuardDeps | undefined,
+  slot: CasperGuardNetworkSlot,
   params: {
     orgId: string;
     agentId: string;
@@ -373,11 +439,11 @@ export async function authorizeWithStoredPolicy(
     spendCap: policy.spend.spendCap.toString(),
     perTransactionMax: policy.spend.perTransactionMax.toString(),
     serviceScope: policy.spend.serviceScope,
-    ...(deps.serviceDestinations ? { serviceDestinations: deps.serviceDestinations } : {}),
+    ...(deps?.serviceDestinations ? { serviceDestinations: deps.serviceDestinations } : {}),
     allowedActions: allowedActionsFromRails(policy.spend.railPermission),
-    allowedNetworks: deps.networks ?? [CASPER_X402_TESTNET_NETWORK],
+    allowedNetworks: deps?.networks ?? [CASPER_X402_TESTNET_NETWORK],
     velocityLimitPerHour: policy.spend.velocityLimitPerHour,
-    trade: deps.trade ?? { maxSlippageBps: 100, allowedRiskLabels: ['low', 'medium'] },
+    trade: deps?.trade ?? { maxSlippageBps: 100, allowedRiskLabels: ['low', 'medium'] },
   } satisfies CasperGuardPolicy;
 
   // LCP pre-authorization legal discovery
@@ -430,7 +496,7 @@ export async function authorizeWithStoredPolicy(
     {
       pool: app.deps.pg,
       redis: app.deps.redis,
-      signer: deps.signer!,
+      signer: slot.signer!,
     },
     {
       decisionId: newCasperGuardDecisionId(),

@@ -8,6 +8,7 @@ import {
   authorizeWithStoredPolicy,
   intentFromPaymentRequired,
   allowedActionsFromRails,
+  selectNetworkSlot,
   type CasperGuardDeps,
 } from './routes.js';
 import { CASPER_X402_TESTNET_NETWORK } from '../../lib/casper/x402.js';
@@ -382,7 +383,10 @@ async function authorizePaymentTool(
   const auth = await requireAgent(app, authz, args.agent_id);
   const idempotencyKey = requireString(args.idempotency_key, 'idempotency_key');
   const intent = intentFromPaymentRequired(args.payment_required);
-  const result = await authorizeWithStoredPolicy(app, deps, {
+  // MCP tool calls have no per-request network header (unlike the HTTP routes) — always testnet.
+  const selection = selectNetworkSlot(deps, undefined);
+  if (!selection.ok) throw new Error(selection.error);
+  const result = await authorizeWithStoredPolicy(app, deps, selection.slot, {
     orgId: auth.orgId,
     agentId: auth.agentId,
     idempotencyKey,
@@ -417,7 +421,10 @@ async function authorizeActionTool(
   const auth = await requireAgent(app, authz, args.agent_id);
   const idempotencyKey = requireString(args.idempotency_key, 'idempotency_key');
   const intent = normalizeCasperGuardIntent(args.intent);
-  const result = await authorizeWithStoredPolicy(app, deps, {
+  // MCP tool calls have no per-request network header (unlike the HTTP routes) — always testnet.
+  const selection = selectNetworkSlot(deps, undefined);
+  if (!selection.ok) throw new Error(selection.error);
+  const result = await authorizeWithStoredPolicy(app, deps, selection.slot, {
     orgId: auth.orgId,
     agentId: auth.agentId,
     idempotencyKey,
