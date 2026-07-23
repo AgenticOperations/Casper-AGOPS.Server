@@ -5,7 +5,6 @@ import { buildApp } from './app.js';
 import { GatewayClient } from './lib/circle/gateway.js';
 import { createStubTransport } from './lib/circle/stub-transport.js';
 import { createHttpTransport } from './lib/circle/http-transport.js';
-import { buildHotPath } from './config/hotpath.js';
 import { buildCasperGuardDeps } from './config/casper-guard.js';
 import { sweepPendingConfirmations } from './engines/provisioning/confirm-sweep.js';
 import { startConfirmationWorker } from './engines/provisioning/confirm-worker.js';
@@ -39,7 +38,6 @@ async function main(): Promise<void> {
     pg: pgPool,
     redis,
     gateway,
-    hotPath: buildHotPath(env),
     casperGuard: buildCasperGuardDeps(env),
   });
   app.log.info({ mode: circleLive ? 'live' : 'local' }, 'circle gateway transport');

@@ -4,9 +4,6 @@ import type { Redis } from 'ioredis';
 import type { Env } from './config/env.js';
 import { pingPg } from './db/client.js';
 import { pingRedis } from './redis/client.js';
-import type { KmsSigner } from './lib/kms/signer.js';
-import type { KnownTokenRegistry, TokenDomainSource } from './lib/eip712/domain.js';
-import type { DomainRegistry } from './engines/identity/domain-binding.js';
 import type { GatewayClient } from './lib/circle/gateway.js';
 import { registerMonitoringRoutes } from './engines/monitoring/routes.js';
 import { registerControlRoutes } from './engines/control/routes.js';
@@ -34,25 +31,10 @@ import {
 } from './engines/casper-guard/routes.js';
 import { registerCasperGuardMcpRoute } from './engines/casper-guard/mcp.js';
 
-/**
- * Hot-path (authorize) wiring: the signer + on-chain read seams the `POST /v1/payment/authorize`
- * route needs to sign and resolve EIP-712 domains. Absent until those are configured (the viem-backed
- * implementations land in L8); without it the route fails closed with 503 while health checks serve.
- */
-export interface HotPathDeps {
-  signer: KmsSigner;
-  tokenDomainSource: TokenDomainSource;
-  /** E7 recipient binding (BUG-17): the .well-known/agentops.json registry; network-backed in server.ts. */
-  domainRegistry: DomainRegistry;
-  chainId: number;
-  knownTokens?: KnownTokenRegistry;
-}
-
 export interface AppDeps {
   env: Env;
   pg: pg.Pool;
   redis: Redis;
-  hotPath?: HotPathDeps;
   /** E5/E6 treasury surface (F2). Absent in unit/HTTP harness → treasury routes fail closed 503. Live Circle wired in server.ts at M9. */
   gateway?: GatewayClient;
   /** P1 email seam. Optional — buildApp defaults a dev log transport; tests inject a capturing one. */
@@ -134,16 +116,6 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       checks: { postgres: dbOk, redis: redisOk },
     });
   });
-
-  // Honest mode reporting (no fakes): which integration transports the running process actually selected.
-  // Public and secret-free by construction — it derives a MODE label from credential presence only, and
-  // mirrors the gates wired at boot (server.ts Circle transport, hotpath.ts viem live read). 'live' =
-  // real provider; 'local' = the in-process stub / known-constant default. NEVER returns the key.
-  app.get('/v1/integrations/status', () => ({
-    circle:
-      deps.env.CIRCLE_GATEWAY_LIVE === 'true' && deps.env.CIRCLE_API_KEY !== '' ? 'live' : 'local',
-    arc: deps.env.ARC_LIVE === 'true' ? 'live' : 'local',
-  }));
 
   // E8 Monitoring — read-side decision feed + the P1-actuated graded brakes (off the hot path).
   registerMonitoringRoutes(app);

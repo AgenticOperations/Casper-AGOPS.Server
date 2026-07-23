@@ -9,8 +9,6 @@ import { loadEnv } from '../../src/config/env.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import type { GatewayClient } from '../../src/lib/circle/gateway.js';
 import { LocalKmsSigner } from '../../src/lib/kms/signer.js';
-import type { TokenDomainSource } from '../../src/lib/eip712/domain.js';
-import type { DomainRegistry } from '../../src/engines/identity/domain-binding.js';
 import {
   assignPolicy,
   createOrg,
@@ -41,23 +39,6 @@ const treasury = privateKeyToAccount(
   '0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba',
 );
 export const signer = new LocalKmsSigner({ 'agent-float': agentFloat, 'treasury-allocation': treasury });
-
-// EIP-5267 seam stub: simulates the on-chain eip712Domain() read for the token (USDC version "2").
-export const tokenDomainSource: TokenDomainSource = {
-  readEip712Domain: ({ address }) =>
-    Promise.resolve({ name: 'USD Coin', version: '2', chainId: BigInt(CHAIN_ID), verifyingContract: address }),
-};
-
-// E7 domain-binding stub (BUG-17): the test vendor host publishes VENDOR; everything else is unverified.
-// requestContext.url host = 'api.weather.example', and raw402 pays VENDOR, so the hot-path ALLOW tests bind.
-export const domainRegistry: DomainRegistry = {
-  resolvePaymentAddress: (host) => Promise.resolve(host === 'api.weather.example' ? VENDOR : null),
-};
-
-/** Permissive binding stub: binds any host to `addr` — for tests not exercising the binding gate itself. */
-export const bindAnyTo = (addr: string): DomainRegistry => ({
-  resolvePaymentAddress: () => Promise.resolve(addr),
-});
 
 const TEST_ENV = {
   NODE_ENV: 'test',
@@ -127,7 +108,6 @@ export function buildOracleApp(
     env,
     pg: pool,
     redis,
-    hotPath: { signer, tokenDomainSource, domainRegistry, chainId: CHAIN_ID },
     ...(logStream ? { logStream } : {}),
     ...(gateway ? { gateway } : {}),
   });
