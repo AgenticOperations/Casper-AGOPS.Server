@@ -7,7 +7,7 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../../src/app.js';
 import { loadEnv } from '../../src/config/env.js';
 import { runMigrations } from '../../src/db/migrate.js';
-import type { GatewayClient } from '../../src/lib/circle/gateway.js';
+import type { CasperTreasuryClient } from '../../src/lib/casper/treasury-client.js';
 import { LocalKmsSigner } from '../../src/lib/kms/signer.js';
 import {
   assignPolicy,
@@ -100,7 +100,7 @@ export function buildOracleApp(
   pool: pg.Pool,
   redis: Redis,
   logStream?: { write(msg: string): void },
-  gateway?: GatewayClient,
+  gateway?: CasperTreasuryClient,
   envOverride?: Record<string, string>,
 ): FastifyInstance {
   const env = loadEnv({ ...TEST_ENV, ...(envOverride ?? {}) });

@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { GatewayClient, type GatewayTransport } from '../../src/lib/circle/gateway.js';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import type { CasperTreasuryClient } from '../../src/lib/casper/treasury-client.js';
 import { depositFor, type ProvisionDeps } from '../../src/engines/provisioning/deposit.js';
 import { keys } from '../../src/redis/keyspace.js';
 import {
@@ -24,20 +24,21 @@ import {
 const NOW = 1_750_000_000;
 
 /** A gateway that records how many deposit-for submissions it received (to prove a DENY moves nothing). */
-function recordingGateway(): { gateway: GatewayClient; state: { depositForCalls: number } } {
+function recordingGateway(): { gateway: CasperTreasuryClient; state: { depositForCalls: number } } {
   const state = { depositForCalls: 0 };
   let n = 0;
-  const transport: GatewayTransport = {
-    request<T>(req: { method: 'GET' | 'POST'; path: string; body?: unknown }): Promise<T> {
-      if (req.path === '/v1/gateway/deposit-for') {
-        state.depositForCalls += 1;
-        n += 1;
-        return Promise.resolve({ id: `gw_tx_${n}` } as T);
-      }
-      return Promise.reject(new Error(`unexpected path ${req.path}`));
-    },
+  const gateway: CasperTreasuryClient = {
+    getBalances: vi.fn(),
+    deposit: vi.fn(),
+    depositFor: vi.fn(async () => {
+      state.depositForCalls += 1;
+      n += 1;
+      return { id: `gw_tx_${n}` };
+    }),
+    reclaimFor: vi.fn(),
+    isFinal: vi.fn(),
   };
-  return { gateway: new GatewayClient(transport), state };
+  return { gateway, state };
 }
 
 let stores: Stores | null = null;

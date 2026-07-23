@@ -1,10 +1,10 @@
 import type { Redis } from 'ioredis';
 import type pg from 'pg';
-import type { GatewayClient } from '../../lib/circle/gateway.js';
+import type { CasperTreasuryClient } from '../../lib/casper/treasury-client.js';
 import { keys } from '../../redis/keyspace.js';
 import { computeSpendable } from '../custody/balance.js';
 
-export interface TreasuryReadDeps { redis: Redis; gateway: GatewayClient; }
+export interface TreasuryReadDeps { redis: Redis; gateway: CasperTreasuryClient; }
 
 export interface TreasuryBalances {
   available: string;

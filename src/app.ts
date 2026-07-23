@@ -4,7 +4,7 @@ import type { Redis } from 'ioredis';
 import type { Env } from './config/env.js';
 import { pingPg } from './db/client.js';
 import { pingRedis } from './redis/client.js';
-import type { GatewayClient } from './lib/circle/gateway.js';
+import type { CasperTreasuryClient } from './lib/casper/treasury-client.js';
 import { registerMonitoringRoutes } from './engines/monitoring/routes.js';
 import { registerControlRoutes } from './engines/control/routes.js';
 import { registerTreasuryRoutes } from './engines/control/treasury-routes.js';
@@ -35,8 +35,8 @@ export interface AppDeps {
   env: Env;
   pg: pg.Pool;
   redis: Redis;
-  /** E5/E6 treasury surface (F2). Absent in unit/HTTP harness → treasury routes fail closed 503. Live Circle wired in server.ts at M9. */
-  gateway?: GatewayClient;
+  /** E5/E6 treasury surface (F2). Absent in unit/HTTP harness → treasury routes fail closed 503. Live Casper-native treasury client wired in server.ts. */
+  gateway?: CasperTreasuryClient;
   /** P1 email seam. Optional — buildApp defaults a dev log transport; tests inject a capturing one. */
   email?: EmailTransport;
   /**
