@@ -141,15 +141,73 @@ async function mcpCall<T>(
   if (!textBlock?.text) {
     throw new Error(`cspr_trade_mcp_error: empty content from ${toolName}`);
   }
-  // The MCP server returns plain-text errors inside the result content (HTTP 200 with error text).
-  // Detect these before attempting JSON.parse to avoid downstream "Unexpected token" throws.
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(textBlock.text);
-  } catch {
-    throw new Error(`cspr_trade_mcp_error: ${toolName} returned non-JSON: ${textBlock.text.slice(0, 200)}`);
+  if (process.env.CSPR_TRADE_DEBUG_RAW === '1') {
+    console.log(`[cspr-trade-debug] ${toolName} raw text (len ${textBlock.text.length}):`, textBlock.text);
   }
-  return parsed as T;
+  return parseMcpToolText(textBlock.text, toolName) as T;
+}
+
+/**
+ * Find the substring of `text` starting at its first '{' that forms one complete, balanced JSON
+ * object — tracking brace depth and string/escape state so braces inside string values (e.g.
+ * `"contains } and { braces in a string"`) don't throw off the count. Returns null if no complete
+ * balanced object is found.
+ */
+function extractBalancedJsonObject(text: string): string | null {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Parse an MCP tool's text content block. Some tools (confirmed live: build_swap) return a
+ * human-readable summary, an embedded JSON block, AND trailing instructional text — e.g.
+ * "Swap ...\nSwap transaction JSON:\n{...}\nPass this JSON to sign_deploy, ..." — not pure JSON,
+ * and not just "everything from the first brace to the end of the string" either (the trailing
+ * text breaks that). Extracts the one balanced JSON object and parses only that.
+ */
+export function parseMcpToolText(text: string, toolName = 'mcp_tool'): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    const extracted = extractBalancedJsonObject(text);
+    if (extracted !== null) {
+      try {
+        return JSON.parse(extracted);
+      } catch {
+        // fall through to the shared error below
+      }
+    }
+    throw new Error(`cspr_trade_mcp_error: ${toolName} returned non-JSON: ${text.slice(0, 200)}`);
+  }
 }
 
 /** Like mcpCall but returns the raw text content block without JSON-parsing it. */
@@ -188,7 +246,24 @@ type McpQuoteResult = {
 type McpSwapBuildResult = {
   deploy_json?: string;
   deploy?: string;
+  [key: string]: unknown;
 };
+
+/**
+ * Resolve build_swap's response into the unsigned transaction/deploy JSON string. Some MCP server
+ * versions wrap it in a `deploy_json`/`deploy` field; the current live CSPR.trade MCP (confirmed
+ * 2026-07-23) instead returns the raw Transaction V1 object directly at the top level (a `hash` +
+ * `payload` + `approvals` shape) — or, for a legacy Deploy, `hash` + `header` + `body`. Falls back
+ * to stringifying the whole object when it matches one of those known shapes.
+ */
+export function resolveUnsignedTransactionJson(buildResult: McpSwapBuildResult): string | undefined {
+  if (buildResult.deploy_json) return buildResult.deploy_json;
+  if (buildResult.deploy) return buildResult.deploy;
+  if ('hash' in buildResult && ('payload' in buildResult || ('header' in buildResult && 'body' in buildResult))) {
+    return JSON.stringify(buildResult);
+  }
+  return undefined;
+}
 
 type McpSubmitResult = {
   deploy_hash?: string;
@@ -315,7 +390,7 @@ export class LiveCsprTradeClient implements CsprTradeClient {
       sender_public_key: rawPublicKey,
     });
 
-    const unsignedDeployJson = buildResult.deploy_json ?? buildResult.deploy;
+    const unsignedDeployJson = resolveUnsignedTransactionJson(buildResult);
     if (!unsignedDeployJson) {
       throw new Error('cspr_trade_build_swap_error: no deploy_json returned by build_swap');
     }
@@ -336,8 +411,13 @@ export class LiveCsprTradeClient implements CsprTradeClient {
   }
 
   /**
-   * Sign an unsigned Casper deploy JSON string with the local PEM key.
-   * Uses casper-js-sdk Deploy.fromJSON / sign / toJSON — the same runtime used by odra-anchorer.
+   * Sign an unsigned Casper deploy/transaction JSON string with the local PEM key.
+   *
+   * The live CSPR.trade MCP (confirmed 2026-07-23) returns a Casper 2.0 Transaction V1 object
+   * (`hash` + `payload` + `approvals`), not a legacy Deploy — `sdk.Deploy.fromJSON` would silently
+   * mis-parse or throw on that shape. Detects which one it actually is and uses the matching
+   * `casper-js-sdk` class (`Transaction` vs `Deploy`) — both expose the same `.sign()`/`.toJSON()`
+   * shape, so the branch is a one-line dispatch.
    */
   private async signDeployJson(unsignedDeployJson: string): Promise<string> {
     const { readFileSync } = await import('node:fs');
@@ -346,6 +426,7 @@ export class LiveCsprTradeClient implements CsprTradeClient {
       PrivateKey: { fromPem(content: string, algorithm: number): unknown };
       KeyAlgorithm: { ED25519: 1; SECP256K1: 2 };
       Deploy: { fromJSON(json: unknown): { sign(key: unknown): void; toJSON(): unknown } };
+      Transaction: { fromJSON(json: unknown): { sign(key: unknown): void; toJSON(): unknown } };
     };
 
     const pemContent = readFileSync(this.pemPath, 'utf8');
@@ -353,9 +434,11 @@ export class LiveCsprTradeClient implements CsprTradeClient {
       this.algorithm === 'ed25519' ? sdk.KeyAlgorithm.ED25519 : sdk.KeyAlgorithm.SECP256K1;
     const privateKey = sdk.PrivateKey.fromPem(pemContent, sdkAlgorithm);
 
-    const deploy = sdk.Deploy.fromJSON(JSON.parse(unsignedDeployJson));
-    deploy.sign(privateKey);
-    return JSON.stringify(deploy.toJSON());
+    const parsed = JSON.parse(unsignedDeployJson) as Record<string, unknown>;
+    const isTransactionV1 = 'payload' in parsed;
+    const item = isTransactionV1 ? sdk.Transaction.fromJSON(parsed) : sdk.Deploy.fromJSON(parsed);
+    item.sign(privateKey);
+    return JSON.stringify(item.toJSON());
   }
 }
 
