@@ -85,4 +85,56 @@ describe('Group C ledger reads (Docker-gated)', () => {
     // LIMIT is applied.
     expect(await readAuditLog(stores.pool, ctx.orgId, ALL, 2)).toHaveLength(2);
   });
+
+  it('fences casper_guard_decisions by requested network; payment_events (non-Casper) always shown', async ({
+    skip,
+  }) => {
+    if (!stores) return skip();
+    const net = await seedAgent(stores.pool, stores.redis, 10);
+
+    // One decision on each Casper network for this org.
+    async function seedDecision(id: string, network: string) {
+      await stores!.pool.query(
+        `INSERT INTO casper_guard_decisions
+           (decision_id, idempotency_key, org_id, agent_id, action_kind, network, resource_id,
+            amount, asset_kind, asset_ref, status, outcome, policy_ref, intent_json, created_at)
+         VALUES ($1, $1, $2, $3, 'casper:deploy', $4, 'casper:deploy:guard-registry',
+            '100', 'native', 'CSPR', 'SETTLED', 'ALLOW', 'policy_x@v1', '{}'::jsonb,
+            '2026-06-19T10:00:00.000Z')`,
+        [id, net.orgId, net.agentId, network],
+      );
+    }
+    await seedDecision('dec_testnet_1', 'casper:casper-test');
+    await seedDecision('dec_mainnet_1', 'casper:casper');
+
+    // Also a non-Casper payment_events row — must appear under BOTH networks.
+    await recordSettlement(stores.pool, {
+      paymentId: 'pay_arc_net', agentId: net.agentId, orgId: net.orgId,
+      rail: RAIL, resourceId: 'svc:weather', destination: '0xV',
+      requested: 1_000_000n, consumed: 1_000_000n, policyRef: 'policy_x@v1',
+      enforcementTimestamp: new Date('2026-06-19T10:00:00.000Z'),
+      settlementTimestamp: new Date('2026-06-19T10:30:00.000Z'),
+    });
+
+    const ids = (rows: { payment_id: string }[]) => rows.map((r) => r.payment_id);
+
+    const testnet = await readAuditLog(stores.pool, net.orgId, ALL, 500, 'casper:casper-test');
+    expect(ids(testnet)).toContain('dec_testnet_1');
+    expect(ids(testnet)).not.toContain('dec_mainnet_1');
+    expect(ids(testnet)).toContain('pay_arc_net'); // non-Casper rail shown under testnet
+
+    const mainnet = await readAuditLog(stores.pool, net.orgId, ALL, 500, 'casper:casper');
+    expect(ids(mainnet)).toContain('dec_mainnet_1');
+    expect(ids(mainnet)).not.toContain('dec_testnet_1');
+    expect(ids(mainnet)).toContain('pay_arc_net'); // and under mainnet too
+
+    // No network arg → unfenced (both Casper decisions visible) — backwards-compatible.
+    const all = await readAuditLog(stores.pool, net.orgId, ALL, 500);
+    expect(ids(all)).toEqual(expect.arrayContaining(['dec_testnet_1', 'dec_mainnet_1', 'pay_arc_net']));
+
+    // Statement audit_count also respects the fence.
+    const sTestnet = await readStatement(stores.pool, net.orgId, ALL, 'casper:casper-test');
+    const sMainnet = await readStatement(stores.pool, net.orgId, ALL, 'casper:casper');
+    expect(sTestnet.totals.settled_count).toBeGreaterThanOrEqual(sMainnet.totals.settled_count);
+  });
 });

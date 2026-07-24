@@ -52,8 +52,17 @@ export interface Statement {
 
 /** Period spend statement for one org: settled totals + DENY count + per agent/service/rail breakdowns.
  *  UNIONs payment_events (Arc/Solana rails) with casper_guard_decisions (AgentOps rails). */
-export async function readStatement(pool: pg.Pool, orgId: string, period: ResolvedPeriod): Promise<Statement> {
-  const args = [orgId, period.from, period.to];
+export async function readStatement(
+  pool: pg.Pool,
+  orgId: string,
+  period: ResolvedPeriod,
+  network?: string,
+): Promise<Statement> {
+  const args: unknown[] = [orgId, period.from, period.to];
+  // Casper network fence: when a network is requested, casper_guard_decisions rows are restricted to
+  // it ($4). payment_events (Arc/Solana/x402 — non-Casper rails) are always included, since the Casper
+  // toggle does not apply to them. Absent network → no fence (shows everything, as before the toggle).
+  const CG_NET = network ? `AND network = $${args.push(network)}` : '';
 
   // payment_events settled filter
   const PE_SETTLED = `result = 'ALLOW' AND settlement_timestamp IS NOT NULL
@@ -61,8 +70,10 @@ export async function readStatement(pool: pg.Pool, orgId: string, period: Resolv
   const PE_DENIED = `result = 'DENY' AND enforcement_timestamp >= $2 AND enforcement_timestamp < $3`;
 
   // casper_guard_decisions settled filter: status=SETTLED means outcome=ALLOW + on-chain confirmed.
-  const CG_SETTLED = `status = 'SETTLED' AND updated_at >= $2 AND updated_at < $3`;
-  const CG_DENIED  = `outcome = 'DENY' AND created_at >= $2 AND created_at < $3`;
+  const CG_SETTLED = `status = 'SETTLED' AND updated_at >= $2 AND updated_at < $3 ${CG_NET}`;
+  const CG_DENIED  = `outcome = 'DENY' AND created_at >= $2 AND created_at < $3 ${CG_NET}`;
+  // Audit count over casper_guard_decisions also respects the network fence.
+  const CG_AUDIT = `created_at >= $2 AND created_at < $3 ${CG_NET}`;
 
   const totals = await pool.query<{
     settled_count: number; settled_amount: string; denied_count: number; audit_count: number;
@@ -82,7 +93,7 @@ export async function readStatement(pool: pg.Pool, orgId: string, period: Resolv
        ) AS denied_count,
        (
          (SELECT count(*)::int FROM payment_events WHERE org_id = $1 AND enforcement_timestamp >= $2 AND enforcement_timestamp < $3)
-         + (SELECT count(*)::int FROM casper_guard_decisions WHERE org_id = $1 AND created_at >= $2 AND created_at < $3)
+         + (SELECT count(*)::int FROM casper_guard_decisions WHERE org_id = $1 AND ${CG_AUDIT})
        ) AS audit_count`,
     args,
   );
@@ -142,7 +153,12 @@ export async function readAuditLog(
   orgId: string,
   period: ResolvedPeriod,
   limit: number,
+  network?: string,
 ): Promise<AuditRow[]> {
+  const params: unknown[] = [orgId, period.from, period.to, limit];
+  // Same Casper fence as readStatement: restrict casper_guard_decisions to the requested network
+  // ($5) while leaving payment_events (non-Casper) unfiltered. Absent → no fence.
+  const CG_NET = network ? `AND network = $${params.push(network)}` : '';
   const res = await pool.query<RawAuditRow>(
     `SELECT payment_id, agent_id, resource_id, rail_scheme, rail_chain,
             requested, consumed, policy_ref, state, result, reason_code,
@@ -169,11 +185,11 @@ export async function readAuditLog(
               CASE WHEN status = 'SETTLED' THEN updated_at ELSE NULL END AS settlement_timestamp,
               COALESCE(tx_hash, deploy_hash) AS tx_hash
        FROM casper_guard_decisions
-       WHERE org_id = $1 AND created_at >= $2 AND created_at < $3
+       WHERE org_id = $1 AND created_at >= $2 AND created_at < $3 ${CG_NET}
      ) combined
      ORDER BY enforcement_timestamp ASC, payment_id ASC
      LIMIT $4`,
-    [orgId, period.from, period.to, limit],
+    params,
   );
   return res.rows.map((r) => ({
     ...r,
