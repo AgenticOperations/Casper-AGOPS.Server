@@ -103,3 +103,23 @@ export function buildGrantDeployForBrowserSigning(input: AssociatedKeyDeployInpu
 export function buildGrantDeployForHeadlessSigning(input: AssociatedKeyDeployInput): UnsignedGrantDeploy {
   return buildGrantDeployForBrowserSigning(input);
 }
+
+export interface UnsignedRevokeDeploy {
+  kind: 'update_associated_keys_revoke';
+  masterAccountHash: string;
+  agentAccountHash: string;
+  args: RevokeDeployArgs;
+}
+
+/**
+ * D-2④: the unsigned REVOKE deploy args for the BROWSER to sign via CSPR.click. Server never signs —
+ * this returns plain data, no key material touched. Mirrors buildGrantDeployForBrowserSigning.
+ */
+export function buildRevokeDeployForBrowserSigning(input: AssociatedKeyDeployInput): UnsignedRevokeDeploy {
+  return {
+    kind: 'update_associated_keys_revoke',
+    masterAccountHash: input.masterAccountHash,
+    agentAccountHash: input.agentAccountHash,
+    args: buildRevokeDeployArgs(input),
+  };
+}

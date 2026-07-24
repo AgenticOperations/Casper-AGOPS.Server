@@ -33,6 +33,7 @@ import {
 import { registerCasperGuardMcpRoute } from './engines/casper-guard/mcp.js';
 import type { KeyVault } from './engines/custody/key-vault.js';
 import type { AssociatedKeyVerifier } from './engines/identity/delegation/verify-associated-key.js';
+import type { AssociatedKeyRevokeVerifier } from './engines/identity/delegation/verify-associated-key-revoke.js';
 
 export interface AppDeps {
   env: Env;
@@ -68,6 +69,12 @@ export interface AppDeps {
    * RPC verifier. Tests inject a stub so they do NO network I/O.
    */
   associatedKeyVerifier?: AssociatedKeyVerifier;
+  /**
+   * Revoke-confirm seam: the on-chain verifier that proves the master-signed REVOKE deploy executed
+   * AND the agent key is ABSENT from the master's associated_keys. Absent → the confirm route builds
+   * the live RPC verifier. Tests inject a stub so they do NO network I/O.
+   */
+  associatedKeyRevokeVerifier?: AssociatedKeyRevokeVerifier;
   /** Optional log destination; tests inject a capturing stream to assert redaction. */
   logStream?: { write(msg: string): void };
 }

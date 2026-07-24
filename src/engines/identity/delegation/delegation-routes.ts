@@ -6,11 +6,12 @@ import { createPolicyVersion, assignPolicy } from '../../control/store.js';
 import { revokeAgentDelegation } from './revoke-agent-delegation.js';
 import { suspendAgent } from '../../control/kill-switch.js';
 import { revokeDelegatedKey, readActiveDelegatedKeyRow } from './delegated-keys-store.js';
-import { buildGrantDeployForBrowserSigning, accountHashFromPublicKeyHex } from './associated-keys.js';
-import { grantWasmBase64 } from './grant-wasm.js';
+import { buildGrantDeployForBrowserSigning, buildRevokeDeployForBrowserSigning, accountHashFromPublicKeyHex } from './associated-keys.js';
+import { grantWasmBase64, revokeWasmBase64 } from './grant-wasm.js';
 import { resolveRequestNetwork, CASPER_NETWORK_HEADER } from '../../casper-guard/network-header.js';
 import { markDelegatedKeyGranted } from './delegated-keys-store.js';
 import { createLiveAssociatedKeyVerifier } from './verify-associated-key.js';
+import { createLiveAssociatedKeyRevokeVerifier } from './verify-associated-key-revoke.js';
 import { revokeAgentInFlight } from '../../casper-guard/policy.js';
 import type { CompiledTradingFlow } from '../../control/trading-flow.js';
 
@@ -189,5 +190,101 @@ export function registerDelegationRoutes(app: FastifyInstance): void {
       return reply.code(202).send({ grant_state: 'pending', reason: 'not_finalized_yet' });
     }
     return reply.code(422).send({ error: 'grant_not_confirmed' });
+  });
+
+  // D-2④(a): return the UNSIGNED revoke deploy args + the revoke WASM bytes (base64) for the
+  // browser/SDK to sign. Mirrors grant-init exactly. The server signs NOTHING — it only derives
+  // account hashes from PUBLIC keys. GLOBAL RULE #1.
+  app.post('/v1/agents/:id/revoke-delegated-key/init', async (request, reply) => {
+    const { pg: pool } = app.deps;
+    const auth = await authForRoute(app, request, 'admin');
+    if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
+    const { id: agentId } = request.params as { id: string };
+    const orgId = auth.principal.orgId;
+
+    const owns = await pool.query('SELECT 1 FROM agents WHERE id = $1 AND org_id = $2', [agentId, orgId]);
+    if (owns.rowCount === 0) return reply.code(404).send({ error: 'agent_not_found' });
+
+    const parsed = GrantInitBody.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
+
+    const resolved = resolveRequestNetwork(request.headers[CASPER_NETWORK_HEADER]);
+    if (!resolved.ok) return reply.code(400).send({ error: 'invalid_network' });
+    const chainName = resolved.network.split(':')[1];
+
+    let masterAccountHash: string;
+    try {
+      masterAccountHash = accountHashFromPublicKeyHex(parsed.data.master_public_key);
+    } catch {
+      return reply.code(400).send({ error: 'invalid_master_public_key' });
+    }
+
+    const row = await readActiveDelegatedKeyRow(pool, agentId);
+    if (!row) return reply.code(409).send({ error: 'no_delegated_key' });
+
+    const unsigned = buildRevokeDeployForBrowserSigning({
+      masterAccountHash,
+      agentAccountHash: accountHashFromPublicKeyHex(row.publicKey),
+    });
+
+    return reply.code(200).send({
+      unsigned_revoke: {
+        master_account_hash: unsigned.masterAccountHash,
+        agent_account_hash: unsigned.agentAccountHash,
+        args: unsigned.args,
+      },
+      wasm_base64: revokeWasmBase64(),
+      chain_name: chainName,
+    });
+  });
+
+  // D-2④(b): confirm the master-signed REVOKE deploy landed on-chain, then flip the delegated key to
+  // REVOKED. The server signs NOTHING — it VERIFIES an on-chain result (deploy executed AND agent key
+  // ABSENT from the master's associated_keys) and flips the DB. NO BLIND PROMOTE: a returned deploy
+  // hash is NOT proof; revoking requires verifier.ok (key confirmed absent on-chain).
+  app.post('/v1/agents/:id/revoke-delegated-key/confirm', async (request, reply) => {
+    const { pg: pool, env } = app.deps;
+    const auth = await authForRoute(app, request, 'admin');
+    if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
+    const { id: agentId } = request.params as { id: string };
+    const orgId = auth.principal.orgId;
+
+    const owns = await pool.query('SELECT 1 FROM agents WHERE id = $1 AND org_id = $2', [agentId, orgId]);
+    if (owns.rowCount === 0) return reply.code(404).send({ error: 'agent_not_found' });
+
+    const parsed = GrantConfirmBody.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
+
+    const resolved = resolveRequestNetwork(request.headers[CASPER_NETWORK_HEADER]);
+    if (!resolved.ok) return reply.code(400).send({ error: 'invalid_network' });
+    const rpcUrl =
+      resolved.network === 'casper:casper'
+        ? env.CASPER_GUARD_MAINNET_FACILITATOR_RPC_URL
+        : env.CASPER_GUARD_FACILITATOR_RPC_URL;
+
+    const row = await readActiveDelegatedKeyRow(pool, agentId);
+    if (!row) return reply.code(409).send({ error: 'no_delegated_key' });
+
+    const stubVerifier = app.deps.associatedKeyRevokeVerifier;
+    if (!stubVerifier && !rpcUrl) return reply.code(503).send({ error: 'rpc_not_configured' });
+    const verifier = stubVerifier ?? createLiveAssociatedKeyRevokeVerifier();
+
+    const result = await verifier.verify({
+      masterAccountHash: parsed.data.master_public_key
+        ? accountHashFromPublicKeyHex(parsed.data.master_public_key)
+        : '',
+      agentAccountHash: accountHashFromPublicKeyHex(row.publicKey),
+      deployHash: parsed.data.deploy_hash,
+      rpcUrl,
+    });
+
+    if (result.ok) {
+      await revokeDelegatedKey(pool, { agentId });
+      return reply.code(200).send({ agent_id: agentId, status: 'REVOKED' });
+    }
+    if (!result.ok && result.reason === 'not_finalized_yet') {
+      return reply.code(202).send({ status: 'pending', reason: 'not_finalized_yet' });
+    }
+    return reply.code(422).send({ error: 'revoke_not_confirmed' });
   });
 }
