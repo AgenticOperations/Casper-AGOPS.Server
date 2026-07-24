@@ -89,4 +89,42 @@ describe('treasury deposit-intents scoped by request network', () => {
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject({ error: 'invalid_network' });
   });
+
+  it('selects the treasury gateway by network: testnet works, mainnet 503s when unconfigured', async ({
+    skip,
+  }) => {
+    if (!stores) return skip();
+    // A fake testnet-only gateway (no mainnet slot) mirrors a real deployment with mainnet unset.
+    const fakeGateway = {
+      getBalances: () => Promise.resolve({ available: 42n }),
+      deposit: () => Promise.resolve({ id: 'tx' }),
+      depositFor: () => Promise.resolve({ id: 'tx' }),
+      reclaimFor: () => Promise.resolve({ id: 'tx' }),
+      isFinal: () => Promise.resolve(true),
+    };
+    const gwApp = buildOracleApp(stores.pool, stores.redis, fakeGateway as never);
+    try {
+      const { adminKey } = await seedAgent(stores.pool, stores.redis, 100);
+
+      // Testnet (default header) → the legacy gateway serves balances.
+      const testnet = await gwApp.inject({
+        method: 'GET',
+        url: '/v1/treasury/balances',
+        headers: { authorization: `Bearer ${adminKey}` },
+      });
+      expect(testnet.statusCode).toBe(200);
+      expect(testnet.json()).toMatchObject({ available: '42' });
+
+      // Mainnet header, but no mainnet gateway configured → honest 503.
+      const mainnet = await gwApp.inject({
+        method: 'GET',
+        url: '/v1/treasury/balances',
+        headers: { authorization: `Bearer ${adminKey}`, 'x-agentops-network': 'casper:casper' },
+      });
+      expect(mainnet.statusCode).toBe(503);
+      expect(mainnet.json()).toMatchObject({ error: 'network_not_configured' });
+    } finally {
+      await gwApp.close();
+    }
+  });
 });

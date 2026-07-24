@@ -20,17 +20,40 @@ async function main(): Promise<void> {
   const pgPool = createPgPool(env);
   const redis = createRedis(env);
 
+  // Testnet treasury gateway (the default; reads the testnet operator account on the testnet RPC).
   const gateway = createCasperTreasuryClient({
     rpcUrl: env.CASPER_GUARD_FACILITATOR_RPC_URL || env.CASPER_GUARD_ODRA_RPC_URL,
     operatorAccountHash: env.CASPER_OPERATOR_ACCOUNT_HASH,
     pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH,
     algorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
   });
+
+  // Mainnet treasury gateway — only when the mainnet operator + RPC are configured. Reads the mainnet
+  // operator account on the mainnet RPC and signs transfers with the mainnet key. Omitted otherwise so
+  // the mainnet toggle's /v1/treasury/* calls 503 network_not_configured instead of silently showing
+  // testnet balances.
+  const mainnetRpc = env.CASPER_GUARD_MAINNET_FACILITATOR_RPC_URL || env.CASPER_GUARD_MAINNET_ODRA_RPC_URL;
+  const mainnetGateway =
+    mainnetRpc && env.CASPER_MAINNET_OPERATOR_ACCOUNT_HASH
+      ? createCasperTreasuryClient({
+          rpcUrl: mainnetRpc,
+          operatorAccountHash: env.CASPER_MAINNET_OPERATOR_ACCOUNT_HASH,
+          pemPath: env.CASPER_GUARD_MAINNET_SIGNER_PEM_PATH || env.CASPER_GUARD_SIGNER_PEM_PATH,
+          algorithm: env.CASPER_GUARD_MAINNET_SIGNER_ALGORITHM,
+        })
+      : undefined;
+
+  const gatewayByNetwork = {
+    'casper:casper-test': gateway,
+    ...(mainnetGateway ? { 'casper:casper': mainnetGateway } : {}),
+  } as const;
+
   const app = buildApp({
     env,
     pg: pgPool,
     redis,
     gateway,
+    gatewayByNetwork,
     casperGuard: buildCasperGuardDeps(env, { pool: pgPool }),
   });
 

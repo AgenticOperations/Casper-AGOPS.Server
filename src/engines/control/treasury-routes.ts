@@ -5,6 +5,29 @@ import { resolveEffectivePolicy } from '../enforcement/policy-epoch-guard.js';
 import { depositFor, type ProvisionDeps } from '../provisioning/deposit.js';
 import { createLiveTransferReader, createStubTransferReader } from '../../lib/casper/transfer-reader.js';
 import { CASPER_NETWORK_HEADER, resolveRequestNetwork } from '../casper-guard/network-header.js';
+import type { CasperTreasuryClient } from '../../lib/casper/treasury-client.js';
+
+/**
+ * Select the treasury gateway for the request's Casper network. Prefers the per-network map; falls
+ * back to the legacy single `gateway` for the testnet slot so existing (non-toggle) deployments and
+ * the HTTP harness keep working. Returns a typed failure the caller maps to a 400/503 reply:
+ *   - invalid header value → 400 invalid_network
+ *   - network selected but no gateway configured for it → 503 network_not_configured
+ */
+function selectGateway(
+  app: FastifyInstance,
+  headerValue: string | string[] | undefined,
+):
+  | { ok: true; gateway: CasperTreasuryClient }
+  | { ok: false; code: number; error: string } {
+  const resolved = resolveRequestNetwork(headerValue);
+  if (!resolved.ok) return { ok: false, code: 400, error: 'invalid_network' };
+  const fromMap = app.deps.gatewayByNetwork?.[resolved.network];
+  const gateway =
+    fromMap ?? (resolved.network === 'casper:casper-test' ? app.deps.gateway : undefined);
+  if (!gateway) return { ok: false, code: 503, error: 'network_not_configured' };
+  return { ok: true, gateway };
+}
 
 /**
  * F2 Treasury — Group A control-plane surface. Dual-credential (session cookie OR sk_ Bearer), fail-closed,
@@ -13,11 +36,12 @@ import { CASPER_NETWORK_HEADER, resolveRequestNetwork } from '../casper-guard/ne
  */
 export function registerTreasuryRoutes(app: FastifyInstance): void {
   app.get('/v1/treasury/balances', async (request, reply) => {
-    const { redis, gateway } = app.deps;
+    const { redis } = app.deps;
     const auth = await authForRoute(app, request, 'member');
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
-    if (!gateway) return reply.code(503).send({ error: 'gateway_unavailable' });
-    const balances = await getTreasuryBalances({ redis, gateway }, auth.principal.orgId);
+    const sel = selectGateway(app, request.headers[CASPER_NETWORK_HEADER]);
+    if (!sel.ok) return reply.code(sel.code).send({ error: sel.error });
+    const balances = await getTreasuryBalances({ redis, gateway: sel.gateway }, auth.principal.orgId);
     return reply.code(200).send(balances);
   });
 
@@ -38,10 +62,12 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
   });
 
   app.post('/v1/treasury/deposit', async (request, reply) => {
-    const { redis, gateway } = app.deps;
+    const { redis } = app.deps;
     const auth = await authForRoute(app, request, 'admin');
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
-    if (!gateway) return reply.code(503).send({ error: 'gateway_unavailable' });
+    const sel = selectGateway(app, request.headers[CASPER_NETWORK_HEADER]);
+    if (!sel.ok) return reply.code(sel.code).send({ error: sel.error });
+    const gateway = sel.gateway;
     const orgId = auth.principal.orgId;
 
     const body = request.body as { amount?: unknown };
@@ -56,10 +82,12 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
   /** Factory for provision + topup — same logic, different `kind`. Control-write → admin+. */
   function provisionHandler(kind: 'depositFor' | 'topup') {
     return async (request: FastifyRequest, reply: FastifyReply) => {
-      const { pg: pool, redis, gateway, env } = app.deps;
+      const { pg: pool, redis, env } = app.deps;
       const auth = await authForRoute(app, request, 'admin');
       if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
-      if (!gateway) return reply.code(503).send({ error: 'gateway_unavailable' });
+      const sel = selectGateway(app, request.headers[CASPER_NETWORK_HEADER]);
+      if (!sel.ok) return reply.code(sel.code).send({ error: sel.error });
+      const gateway = sel.gateway;
       const orgId = auth.principal.orgId;
 
       const { id: agentId } = request.params as { id: string };
@@ -155,13 +183,15 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
    * On match: credits the org treasury and marks the intent credited (idempotent).
    */
   app.post('/v1/treasury/verify-deposit', async (request, reply) => {
-    const { pg: pool, redis, gateway, env } = app.deps;
+    const { pg: pool, redis, env } = app.deps;
     const auth = await authForRoute(app, request, 'admin');
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
-    if (!gateway) return reply.code(503).send({ error: 'gateway_unavailable' });
 
     const resolvedNetwork = resolveRequestNetwork(request.headers[CASPER_NETWORK_HEADER]);
     if (!resolvedNetwork.ok) return reply.code(400).send({ error: 'invalid_network' });
+    const sel = selectGateway(app, request.headers[CASPER_NETWORK_HEADER]);
+    if (!sel.ok) return reply.code(sel.code).send({ error: sel.error });
+    const gateway = sel.gateway;
 
     const body = request.body as { ref_id?: unknown };
     if (typeof body?.ref_id !== 'string' || !/^\d+$/.test(body.ref_id)) {
@@ -280,10 +310,12 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
    * then credit the org treasury with the transferred amount. Idempotent on deploy_hash.
    */
   app.post('/v1/treasury/deposit-by-hash', async (request, reply) => {
-    const { pg: pool, redis, gateway, env } = app.deps;
+    const { pg: pool, redis, env } = app.deps;
     const auth = await authForRoute(app, request, 'admin');
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
-    if (!gateway) return reply.code(503).send({ error: 'gateway_unavailable' });
+    const sel = selectGateway(app, request.headers[CASPER_NETWORK_HEADER]);
+    if (!sel.ok) return reply.code(sel.code).send({ error: sel.error });
+    const gateway = sel.gateway;
 
     const body = request.body as { deploy_hash?: unknown; amount?: unknown; amount_motes?: unknown };
     if (typeof body?.deploy_hash !== 'string' || !/^[0-9a-fA-F]{64}$/.test(body.deploy_hash)) {

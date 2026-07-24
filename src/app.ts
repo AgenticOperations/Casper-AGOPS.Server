@@ -36,8 +36,14 @@ export interface AppDeps {
   env: Env;
   pg: pg.Pool;
   redis: Redis;
-  /** E5/E6 treasury surface (F2). Absent in unit/HTTP harness → treasury routes fail closed 503. Live Casper-native treasury client wired in server.ts. */
+  /** E5/E6 treasury surface (F2). Absent in unit/HTTP harness → treasury routes fail closed 503. Live Casper-native treasury client wired in server.ts. Mirrors the testnet slot of {@link gatewayByNetwork} for backwards-compat. */
   gateway?: CasperTreasuryClient;
+  /**
+   * Per-network treasury gateways (network toggle). Keyed by scoped-network string; a network with no
+   * operator/RPC config is omitted so its slot 503s. Treasury routes select by the x-agentops-network
+   * header; absent → testnet. `gateway` above stays populated from the testnet slot for old call sites.
+   */
+  gatewayByNetwork?: Partial<Record<'casper:casper-test' | 'casper:casper', CasperTreasuryClient>>;
   /** P1 email seam. Optional — buildApp defaults a dev log transport; tests inject a capturing one. */
   email?: EmailTransport;
   /**

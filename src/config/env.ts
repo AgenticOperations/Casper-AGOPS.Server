@@ -76,6 +76,14 @@ const EnvSchema = z.object({
     .regex(/^[0-9a-fA-F]{64}$/)
     .or(z.literal(''))
     .default(''),
+  // Mainnet-slot operator account the mainnet treasury gateway reads on-chain balances from (and the
+  // mainnet float-destination fence). Empty = mainnet treasury not configured (the mainnet toggle's
+  // /v1/treasury/* calls 503 honestly). Distinct account from testnet — real mainnet funds.
+  CASPER_MAINNET_OPERATOR_ACCOUNT_HASH: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/)
+    .or(z.literal(''))
+    .default(''),
   CSPR_TRADE_MAX_SLIPPAGE_BPS: z.coerce.number().int().min(0).max(10_000).default(100),
   CSPR_TRADE_ALLOWED_RISK_LABELS: z.string().min(1).default('low,medium'),
   // Live CSPR.trade MCP integration. Defaults empty (UnavailableCsprTradeClient). Set to
