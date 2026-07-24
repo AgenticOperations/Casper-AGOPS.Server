@@ -117,11 +117,11 @@ describe('schema migrations', () => {
     expect(applied.rows.map((r) => r.id)).toContain('0013_network_scoping');
 
     await pool.query(
-      `INSERT INTO orgs (id, name, admin_key_hash) VALUES ('org_net_test', 'Network Test Org', 'hash')
+      `INSERT INTO orgs (id, name, admin_key_hash) VALUES ('org_net_test', 'Network Test Org', 'hash_net')
        ON CONFLICT (id) DO NOTHING`,
     );
     await pool.query(
-      `INSERT INTO agents (id, org_id, api_key_hash) VALUES ('agt_net_test', 'org_net_test', 'hash')
+      `INSERT INTO agents (id, org_id, api_key_hash) VALUES ('agt_net_test', 'org_net_test', 'hash_net')
        ON CONFLICT (id) DO NOTHING`,
     );
     await pool.query(
@@ -165,11 +165,11 @@ describe('schema migrations', () => {
     expect(applied.rows.map((r) => r.id)).toContain('0014_delegated_keys');
 
     await pool.query(
-      `INSERT INTO orgs (id, name, admin_key_hash) VALUES ('org_dk_test', 'Delegated Key Test Org', 'hash')
+      `INSERT INTO orgs (id, name, admin_key_hash) VALUES ('org_dk_test', 'Delegated Key Test Org', 'hash_dk')
        ON CONFLICT (id) DO NOTHING`,
     );
     await pool.query(
-      `INSERT INTO agents (id, org_id, api_key_hash) VALUES ('agt_dk_test', 'org_dk_test', 'hash')
+      `INSERT INTO agents (id, org_id, api_key_hash) VALUES ('agt_dk_test', 'org_dk_test', 'hash_dk')
        ON CONFLICT (id) DO NOTHING`,
     );
 
@@ -212,11 +212,11 @@ describe('schema migrations', () => {
     expect(applied.rows.map((r) => r.id)).toContain('0015_agent_vault_keys');
 
     await pool.query(
-      `INSERT INTO orgs (id, name, admin_key_hash) VALUES ('org_vk_test', 'Vault Key Test Org', 'hash')
+      `INSERT INTO orgs (id, name, admin_key_hash) VALUES ('org_vk_test', 'Vault Key Test Org', 'hash_vk')
        ON CONFLICT (id) DO NOTHING`,
     );
     await pool.query(
-      `INSERT INTO agents (id, org_id, api_key_hash) VALUES ('agt_vk_test', 'org_vk_test', 'hash')
+      `INSERT INTO agents (id, org_id, api_key_hash) VALUES ('agt_vk_test', 'org_vk_test', 'hash_vk')
        ON CONFLICT (id) DO NOTHING`,
     );
 
@@ -239,5 +239,43 @@ describe('schema migrations', () => {
     );
     expect(second.rows).toHaveLength(1);
     expect(second.rows[0]?.encrypted_private_key).toBe('blob_v2');
+  });
+
+  it('applies 0016_delegated_key_grant_state: grant_state defaults to pending and rejects bogus values', async ({
+    skip,
+  }) => {
+    if (!dockerAvailable || !pool) return skip();
+    await runMigrations(pool); // idempotent: ensure 0016 is applied
+
+    const applied = await pool.query<{ id: string }>('SELECT id FROM schema_migrations');
+    expect(applied.rows.map((r) => r.id)).toContain('0016_delegated_key_grant_state');
+
+    await pool.query(
+      `INSERT INTO orgs (id, name, admin_key_hash) VALUES ('org_gs_test', 'Grant State Test Org', 'hash_gs')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    await pool.query(
+      `INSERT INTO agents (id, org_id, api_key_hash) VALUES ('agt_gs_test', 'org_gs_test', 'hash_gs')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+
+    // Inserting WITHOUT setting grant_state must default to 'pending' (existing keys are not yet
+    // on-chain-confirmed — Half-2 has not run).
+    await pool.query(
+      `INSERT INTO delegated_keys (id, agent_id, public_key) VALUES ('dk_gs_1', 'agt_gs_test', 'pub_gs_1')`,
+    );
+    const row = await pool.query<{ grant_state: string; grant_deploy_hash: string | null }>(
+      `SELECT grant_state, grant_deploy_hash FROM delegated_keys WHERE id = 'dk_gs_1'`,
+    );
+    expect(row.rows[0]?.grant_state).toBe('pending');
+    expect(row.rows[0]?.grant_deploy_hash).toBeNull();
+
+    // A bogus grant_state value must be rejected by the CHECK constraint.
+    await expect(
+      pool.query(
+        `INSERT INTO delegated_keys (id, agent_id, public_key, status, grant_state)
+         VALUES ('dk_gs_bogus', 'agt_gs_test', 'pub_gs_bogus', 'ROTATED', 'bogus')`,
+      ),
+    ).rejects.toThrow();
   });
 });
