@@ -24,6 +24,7 @@ export default defineConfig({
       'test/control/graph-builder/**/*.test.ts',
       'test/control/attach-trading-flow.test.ts',
       'test/control/trading-flow.test.ts',
+      'test/control/treasury-network.test.ts',
       'test/custody/**/*.test.ts',
       'test/identity/**/*.test.ts',
       'test/infra/healthz.test.ts',

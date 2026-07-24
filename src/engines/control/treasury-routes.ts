@@ -4,6 +4,7 @@ import { getTreasuryBalances, listAgentsWithFloats, listTreasuryHistory, seconds
 import { resolveEffectivePolicy } from '../enforcement/policy-epoch-guard.js';
 import { depositFor, type ProvisionDeps } from '../provisioning/deposit.js';
 import { createLiveTransferReader, createStubTransferReader } from '../../lib/casper/transfer-reader.js';
+import { CASPER_NETWORK_HEADER, resolveRequestNetwork } from '../casper-guard/network-header.js';
 
 /**
  * F2 Treasury — Group A control-plane surface. Dual-credential (session cookie OR sk_ Bearer), fail-closed,
@@ -114,6 +115,10 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
     const auth = await authForRoute(app, request, 'admin');
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
 
+    // Scope the intent to the request's Casper network (absent → testnet, unknown → 400).
+    const resolvedNetwork = resolveRequestNetwork(request.headers[CASPER_NETWORK_HEADER]);
+    if (!resolvedNetwork.ok) return reply.code(400).send({ error: 'invalid_network' });
+
     const operatorAccountHash = env.CASPER_OPERATOR_ACCOUNT_HASH;
     if (!operatorAccountHash) {
       return reply.code(503).send({ error: 'operator_wallet_not_configured' });
@@ -133,9 +138,9 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
         : null;
 
     await pool.query(
-      `INSERT INTO treasury_deposit_intents (org_id, ref_id, expected_amount)
-       VALUES ($1, $2, $3)`,
-      [auth.principal.orgId, refId.toString(), expectedAmount],
+      `INSERT INTO treasury_deposit_intents (org_id, ref_id, expected_amount, network)
+       VALUES ($1, $2, $3, $4)`,
+      [auth.principal.orgId, refId.toString(), expectedAmount, resolvedNetwork.network],
     );
 
     return reply.code(200).send({
@@ -155,6 +160,9 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
     if (!gateway) return reply.code(503).send({ error: 'gateway_unavailable' });
 
+    const resolvedNetwork = resolveRequestNetwork(request.headers[CASPER_NETWORK_HEADER]);
+    if (!resolvedNetwork.ok) return reply.code(400).send({ error: 'invalid_network' });
+
     const body = request.body as { ref_id?: unknown };
     if (typeof body?.ref_id !== 'string' || !/^\d+$/.test(body.ref_id)) {
       return reply.code(400).send({ error: 'invalid_ref_id' });
@@ -163,13 +171,15 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
     const orgId = auth.principal.orgId;
     const refId = BigInt(body.ref_id);
 
-    // Load the intent — must belong to this org and be pending.
+    // Load the intent — must belong to this org, match the request network, and be pending.
+    // The network fence ensures a mainnet intent is never verified/credited under the testnet
+    // header (and vice-versa), even for the same org and ref_id.
     const intentRes = await pool.query<{
       id: string; status: string; deploy_hash: string | null;
     }>(
       `SELECT id, status, deploy_hash FROM treasury_deposit_intents
-       WHERE ref_id = $1 AND org_id = $2`,
-      [refId.toString(), orgId],
+       WHERE ref_id = $1 AND org_id = $2 AND network = $3`,
+      [refId.toString(), orgId, resolvedNetwork.network],
     );
     const intent = intentRes.rows[0];
     if (!intent) {
