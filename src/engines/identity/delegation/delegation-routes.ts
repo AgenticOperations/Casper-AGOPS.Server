@@ -5,7 +5,10 @@ import { attachTradingFlow } from '../../control/attach-trading-flow.js';
 import { createPolicyVersion, assignPolicy } from '../../control/store.js';
 import { revokeAgentDelegation } from './revoke-agent-delegation.js';
 import { suspendAgent } from '../../control/kill-switch.js';
-import { revokeDelegatedKey } from './delegated-keys-store.js';
+import { revokeDelegatedKey, readActiveDelegatedKeyRow } from './delegated-keys-store.js';
+import { buildGrantDeployForBrowserSigning, accountHashFromPublicKeyHex } from './associated-keys.js';
+import { grantWasmBase64 } from './grant-wasm.js';
+import { resolveRequestNetwork, CASPER_NETWORK_HEADER } from '../../casper-guard/network-header.js';
 import { revokeAgentInFlight } from '../../casper-guard/policy.js';
 import type { CompiledTradingFlow } from '../../control/trading-flow.js';
 
@@ -19,6 +22,11 @@ import type { CompiledTradingFlow } from '../../control/trading-flow.js';
 const AttachFlowBody = z.object({
   flow: z.custom<CompiledTradingFlow>((v) => typeof v === 'object' && v !== null),
   role_assignments: z.record(z.string(), z.string()),
+});
+
+// Casper public keys are 01=ed25519 or 02=secp256k1 followed by hex.
+const GrantInitBody = z.object({
+  master_public_key: z.string().regex(/^0[12][0-9a-fA-F]+$/),
 });
 
 export function registerDelegationRoutes(app: FastifyInstance): void {
@@ -58,6 +66,52 @@ export function registerDelegationRoutes(app: FastifyInstance): void {
       agent_suspended: result.agentSuspended,
       aborted_decision_ids: result.abortedDecisionIds,
       committed_decision_ids: result.committedDecisionIds,
+    });
+  });
+
+  // D-2②(a): return the UNSIGNED grant deploy args + the WASM bytes (base64) for the browser/SDK
+  // to sign. The server signs NOTHING and touches no private-key material — it only derives account
+  // hashes from PUBLIC keys. GLOBAL RULE #1.
+  app.post('/v1/agents/:id/grant-delegated-key/init', async (request, reply) => {
+    const { pg: pool } = app.deps;
+    const auth = await authForRoute(app, request, 'admin');
+    if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
+    const { id: agentId } = request.params as { id: string };
+    const orgId = auth.principal.orgId;
+
+    const owns = await pool.query('SELECT 1 FROM agents WHERE id = $1 AND org_id = $2', [agentId, orgId]);
+    if (owns.rowCount === 0) return reply.code(404).send({ error: 'agent_not_found' });
+
+    const parsed = GrantInitBody.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
+
+    const resolved = resolveRequestNetwork(request.headers[CASPER_NETWORK_HEADER]);
+    if (!resolved.ok) return reply.code(400).send({ error: 'invalid_network' });
+    const chainName = resolved.network.split(':')[1];
+
+    let masterAccountHash: string;
+    try {
+      masterAccountHash = accountHashFromPublicKeyHex(parsed.data.master_public_key);
+    } catch {
+      return reply.code(400).send({ error: 'invalid_master_public_key' });
+    }
+
+    const row = await readActiveDelegatedKeyRow(pool, agentId);
+    if (!row) return reply.code(409).send({ error: 'no_delegated_key' });
+
+    const unsigned = buildGrantDeployForBrowserSigning({
+      masterAccountHash,
+      agentAccountHash: accountHashFromPublicKeyHex(row.publicKey),
+    });
+
+    return reply.code(200).send({
+      unsigned_grant: {
+        master_account_hash: unsigned.masterAccountHash,
+        agent_account_hash: unsigned.agentAccountHash,
+        args: unsigned.args,
+      },
+      wasm_base64: grantWasmBase64(),
+      chain_name: chainName,
     });
   });
 }

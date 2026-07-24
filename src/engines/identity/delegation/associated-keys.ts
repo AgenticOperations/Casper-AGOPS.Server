@@ -15,6 +15,16 @@
  * (`master_weight`) in the same deploy.
  */
 
+import { PublicKey } from 'casper-js-sdk';
+
+/**
+ * Derive the BARE hex account hash (no `account-hash-` prefix) from a Casper PUBLIC key hex.
+ * Only public-key material touches this — no private key, no signing. GLOBAL RULE #1.
+ */
+export function accountHashFromPublicKeyHex(publicKeyHex: string): string {
+  return PublicKey.fromHex(publicKeyHex).accountHash().toHex().replace(/^account-hash-/, '');
+}
+
 export const GRANT_THRESHOLDS = {
   /** The master's own new weight — high enough to alone satisfy keyManagementThreshold below,
    * so the account is never bricked even if the agent's weight-1 key were somehow unavailable. */
