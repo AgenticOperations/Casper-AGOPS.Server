@@ -4,6 +4,8 @@ import { createRedis } from './redis/client.js';
 import { buildApp } from './app.js';
 import { createCasperTreasuryClient } from './lib/casper/treasury-client.js';
 import { buildCasperGuardDeps } from './config/casper-guard.js';
+import { EncryptedStoreVault } from './engines/custody/key-vault.js';
+import { createPgVaultBlobStore } from './engines/custody/pg-vault-blob-store.js';
 import { sweepPendingConfirmations } from './engines/provisioning/confirm-sweep.js';
 import { startConfirmationWorker } from './engines/provisioning/confirm-worker.js';
 
@@ -48,13 +50,25 @@ async function main(): Promise<void> {
     ...(mainnetGateway ? { 'casper:casper': mainnetGateway } : {}),
   } as const;
 
+  // Build the per-agent delegated-key vault ONCE (mirrors the exact gating in casper-guard.ts) and
+  // share it with both AppDeps.vault (agent-create auto-grant) and buildCasperGuardDeps (runtime
+  // signer). Absent when CASPER_GUARD_VAULT_MASTER_SECRET is unset → agents stay custodial.
+  const vault =
+    env.CASPER_GUARD_VAULT_MASTER_SECRET !== ''
+      ? new EncryptedStoreVault({
+          masterSecretHex: env.CASPER_GUARD_VAULT_MASTER_SECRET,
+          store: createPgVaultBlobStore(pgPool),
+        })
+      : undefined;
+
   const app = buildApp({
     env,
     pg: pgPool,
     redis,
     gateway,
     gatewayByNetwork,
-    casperGuard: buildCasperGuardDeps(env, { pool: pgPool }),
+    ...(vault ? { vault } : {}),
+    casperGuard: buildCasperGuardDeps(env, { pool: pgPool, ...(vault ? { vault } : {}) }),
   });
 
   const worker = startConfirmationWorker(

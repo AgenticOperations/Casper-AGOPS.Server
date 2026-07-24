@@ -231,21 +231,30 @@ function buildNetworkSlot(
   };
 }
 
-export function buildCasperGuardDeps(env: Env, ctx?: { pool?: pg.Pool }): CasperGuardDeps {
+export function buildCasperGuardDeps(
+  env: Env,
+  ctx?: { pool?: pg.Pool; vault?: KeyVault },
+): CasperGuardDeps {
   const serviceDestinations = parseServiceDestinations(env.CASPER_GUARD_SERVICE_DESTINATIONS);
   const enabledNetworks = parseNetworks(env.CASPER_GUARD_NETWORKS);
 
   // Milestone B (D-3): per-agent delegated signing is only wired in when BOTH a pool (to look up
   // delegated_keys / agent_vault_keys) and a vault master secret are available. Either missing =
   // every network slot's signer stays the plain custodial provider (today's behavior, unchanged).
+  // Prefer a pre-built vault passed in by the caller (server.ts builds ONE vault and shares it with
+  // both AppDeps.vault and here, so agent-create grants and the runtime signer use the same store).
+  // When none is passed, build our own so the existing test harness (which calls this without a
+  // vault) is unchanged.
   const vaultCtx: CasperGuardVaultContext | undefined =
     ctx?.pool && env.CASPER_GUARD_VAULT_MASTER_SECRET !== ''
       ? {
           pool: ctx.pool,
-          vault: new EncryptedStoreVault({
-            masterSecretHex: env.CASPER_GUARD_VAULT_MASTER_SECRET,
-            store: createPgVaultBlobStore(ctx.pool),
-          }),
+          vault:
+            ctx.vault ??
+            new EncryptedStoreVault({
+              masterSecretHex: env.CASPER_GUARD_VAULT_MASTER_SECRET,
+              store: createPgVaultBlobStore(ctx.pool),
+            }),
         }
       : undefined;
 

@@ -31,6 +31,7 @@ import {
   type CasperGuardDeps,
 } from './engines/casper-guard/routes.js';
 import { registerCasperGuardMcpRoute } from './engines/casper-guard/mcp.js';
+import type { KeyVault } from './engines/custody/key-vault.js';
 
 export interface AppDeps {
   env: Env;
@@ -54,6 +55,12 @@ export interface AppDeps {
   googleOAuth?: GoogleClient;
   /** CasperHacks product surface. Absent means routes report explicit unconfigured status/fail closed. */
   casperGuard?: CasperGuardDeps;
+  /**
+   * Per-agent delegated-key vault. Present only when CASPER_GUARD_VAULT_MASTER_SECRET is set (wired
+   * in server.ts); absent → the delegated-key auto-grant on agent create is unavailable and agents
+   * stay custodial. Built ONCE in server.ts and shared with buildCasperGuardDeps to avoid two vaults.
+   */
+  vault?: KeyVault;
   /** Optional log destination; tests inject a capturing stream to assert redaction. */
   logStream?: { write(msg: string): void };
 }
