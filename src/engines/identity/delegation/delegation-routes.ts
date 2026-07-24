@@ -76,6 +76,21 @@ export function registerDelegationRoutes(app: FastifyInstance): void {
     });
   });
 
+  // Task 8: read the agent's delegated-key grant state for the roster UI (badge + Activate/Revoke).
+  // Read-only, admin-fenced, tenant-fenced. The delegated key is network-agnostic (SHARED across
+  // networks — no network column); this returns only whether a key exists and its grant state.
+  app.get('/v1/agents/:id/delegation', async (request, reply) => {
+    const { pg: pool } = app.deps;
+    const auth = await authForRoute(app, request, 'admin');
+    if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
+    const { id: agentId } = request.params as { id: string };
+    const owns = await pool.query('SELECT 1 FROM agents WHERE id = $1 AND org_id = $2', [agentId, auth.principal.orgId]);
+    if (owns.rowCount === 0) return reply.code(404).send({ error: 'agent_not_found' });
+    const row = await readActiveDelegatedKeyRow(pool, agentId);
+    if (!row) return reply.code(200).send({ has_key: false, public_key: null, grant_state: null });
+    return reply.code(200).send({ has_key: true, public_key: row.publicKey, grant_state: row.grantState });
+  });
+
   // D-2②(a): return the UNSIGNED grant deploy args + the WASM bytes (base64) for the browser/SDK
   // to sign. The server signs NOTHING and touches no private-key material — it only derives account
   // hashes from PUBLIC keys. GLOBAL RULE #1.
