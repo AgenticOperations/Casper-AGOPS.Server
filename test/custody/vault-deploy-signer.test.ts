@@ -5,9 +5,13 @@ import { EncryptedStoreVault, type VaultBlobStore } from '../../src/engines/cust
 const hashBytes = new Uint8Array([1, 2, 3, 4]);
 const fromJSONSpy = vi.fn();
 const setSignatureSpy = vi.fn();
+const toJSONSpy = vi.fn();
 const fromHexSpy = vi.fn();
 const toJSONResult = { hash: 'deadbeef', approvals: [{ signer: 'the-public-key' }] };
 
+// IMPORTANT: casper-js-sdk 5.0.12 exposes Deploy.fromJSON AND Deploy.toJSON as STATIC methods; the
+// object fromJSON returns has NO instance .toJSON(). The mock must mirror that (static toJSON) or it
+// validates code that crashes against the real SDK (this exact gap hid a production bug once).
 vi.mock('casper-js-sdk', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
@@ -15,6 +19,7 @@ vi.mock('casper-js-sdk', async (importOriginal) => {
     Deploy: {
       fromJSON: fromJSONSpy,
       setSignature: setSignatureSpy,
+      toJSON: toJSONSpy,
     },
     PublicKey: {
       fromHex: fromHexSpy,
@@ -45,8 +50,11 @@ describe('signDeployJsonWithVault (E.3 — non-custodial swap signing, delegated
     const vault = new EncryptedStoreVault({ masterSecretHex: MASTER_SECRET, store: inMemoryBlobStore() });
     const { publicKey } = await vault.generateKeypair('agt_trader_1');
 
-    const parsedDeploy = { hash: { toBytes: () => hashBytes }, toJSON: () => toJSONResult };
+    const parsedDeploy = { hash: { toBytes: () => hashBytes } };
+    const signedDeploy = { ...parsedDeploy, signed: true };
     fromJSONSpy.mockReturnValue(parsedDeploy);
+    setSignatureSpy.mockReturnValue(signedDeploy);
+    toJSONSpy.mockReturnValue(toJSONResult);
     fromHexSpy.mockReturnValue('the-parsed-public-key');
 
     const signedDeployJson = await signDeployJsonWithVault({
@@ -66,6 +74,9 @@ describe('signDeployJsonWithVault (E.3 — non-custodial swap signing, delegated
     expect(setSigCall[1].length).toBeGreaterThan(1);
     expect(setSigCall[2]).toBe('the-parsed-public-key');
 
+    // Serialization goes through the STATIC Deploy.toJSON(signedDeploy) — the return of setSignature,
+    // not the pre-signature object — matching the real SDK surface.
+    expect(toJSONSpy).toHaveBeenCalledWith(signedDeploy);
     expect(JSON.parse(signedDeployJson)).toEqual(toJSONResult);
   });
 
@@ -73,7 +84,9 @@ describe('signDeployJsonWithVault (E.3 — non-custodial swap signing, delegated
     const { signDeployJsonWithVault } = await import('../../src/engines/custody/vault-deploy-signer.js');
     const vault = new EncryptedStoreVault({ masterSecretHex: MASTER_SECRET, store: inMemoryBlobStore() });
     const { publicKey } = await vault.generateKeypair('agt_trader_2');
-    fromJSONSpy.mockReturnValue({ hash: { toBytes: () => hashBytes }, toJSON: () => toJSONResult });
+    fromJSONSpy.mockReturnValue({ hash: { toBytes: () => hashBytes } });
+    setSignatureSpy.mockReturnValue({ signed: true });
+    toJSONSpy.mockReturnValue(toJSONResult);
     fromHexSpy.mockReturnValue('pub');
 
     // The function's own input type has no pemPath field at all — this is a structural guarantee,

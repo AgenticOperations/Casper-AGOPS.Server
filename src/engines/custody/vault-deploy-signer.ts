@@ -10,7 +10,10 @@ const ED25519_ALGORITHM_TAG = 1;
 
 type CasperSdkDeploySigning = {
   Deploy: {
-    fromJSON(json: unknown): { hash: { toBytes(): Uint8Array }; toJSON(): unknown };
+    // NOTE: fromJSON/toJSON are STATIC on casper-js-sdk 5.0.12's Deploy — the object returned by
+    // fromJSON has NO instance .toJSON(). Round-trip via the static Deploy.toJSON(deploy).
+    fromJSON(json: unknown): { hash: { toBytes(): Uint8Array } };
+    toJSON(deploy: unknown): unknown;
     setSignature(deploy: unknown, signature: Uint8Array, publicKey: unknown): unknown;
   };
   PublicKey: {
@@ -43,7 +46,9 @@ export async function signDeployJsonWithVault(input: {
   taggedSignature.set(rawSignature, 1);
 
   const publicKey = sdk.PublicKey.fromHex(input.publicKeyHex);
-  sdk.Deploy.setSignature(deploy, taggedSignature, publicKey);
+  // setSignature returns the signed deploy (it does not reliably mutate in place); use its return,
+  // and serialize via the STATIC Deploy.toJSON — the fromJSON-produced object has no instance toJSON.
+  const signed = sdk.Deploy.setSignature(deploy, taggedSignature, publicKey) ?? deploy;
 
-  return JSON.stringify(deploy.toJSON());
+  return JSON.stringify(sdk.Deploy.toJSON(signed));
 }
