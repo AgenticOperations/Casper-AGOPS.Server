@@ -1,5 +1,5 @@
 /**
- * @agentops/sdk — MCP client helpers (F.3), for agent frameworks (LangChain/CrewAI) that consume
+ * @agops-labs/sdk — MCP client helpers (F.3), for agent frameworks (LangChain/CrewAI) that consume
  * the AgentOps proxy as MCP tools rather than raw REST. Thin JSON-RPC 2.0 wrapper over the
  * `tools/list` and `tools/call` methods casper-guard/mcp.ts implements.
  */

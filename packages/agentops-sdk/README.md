@@ -1,11 +1,11 @@
-# @agentops/sdk
+# @agops-labs/sdk
 
 Thin REST + MCP client for the AgentOps (Casper-AGOPS) proxy. Phase 2, Milestone F.3 (D-4).
 
 ## REST client
 
 ```ts
-import { createAgentOpsClient } from '@agentops/sdk';
+import { createAgentOpsClient } from '@agops-labs/sdk';
 
 // Operator (sk_) client — fleet management.
 const operator = createAgentOpsClient({ baseUrl: 'https://your-proxy.example', apiKey: 'sk_live_...' });
@@ -36,7 +36,7 @@ For agent frameworks (LangChain, CrewAI, ...) that consume the proxy as MCP tool
 REST:
 
 ```ts
-import { createAgentOpsMcpClient } from '@agentops/sdk';
+import { createAgentOpsMcpClient } from '@agops-labs/sdk';
 
 const mcp = createAgentOpsMcpClient({ url: 'https://your-proxy.example/v1/casper-guard/mcp', apiKey: 'ag_live_...' });
 const tools = await mcp.listTools();

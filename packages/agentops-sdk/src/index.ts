@@ -1,7 +1,7 @@
 export * from './mcp.js';
 
 /**
- * @agentops/sdk — thin REST client for the AgentOps proxy (Phase 2 Milestone F.3, D-4).
+ * @agops-labs/sdk — thin REST client for the AgentOps proxy (Phase 2 Milestone F.3, D-4).
  *
  * Two credential kinds, matching the server's existing auth model (no new auth mechanism, D-4③):
  *   - sk_ operator/admin key: createAgent, attachTradingFlow, revokeAgent, getDecision.
