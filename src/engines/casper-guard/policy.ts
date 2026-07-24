@@ -3,6 +3,8 @@ import type pg from 'pg';
 import type { Redis } from 'ioredis';
 import { releaseHold, reserveHoldWithinPolicy, windowSum, snapshotWindows } from '../ledger/window.js';
 import { keys } from '../../redis/keyspace.js';
+import { isAgentSuspended } from '../control/kill-switch.js';
+import { verifyMinReceivedWithinSlippage } from './quote-verification.js';
 import type {
   CasperGuardActionKind,
   CasperGuardIntent,
@@ -11,6 +13,7 @@ import type {
 import {
   createCasperGuardDecision,
   createCasperGuardDecisionAndHold,
+  listCasperGuardDecisionsForRevoke,
   markCasperGuardDecisionSigned,
   markCasperGuardDecisionTerminal,
   readCasperGuardDecision,
@@ -29,6 +32,7 @@ export type CasperGuardDenyReason =
   | 'service_scope_destination_mismatch'
   | 'velocity_exceeded'
   | 'org_suspended'
+  | 'agent_suspended'
   | 'trade_risk_exceeded'
   | 'idempotency_in_progress'
   | 'idempotency_conflict'
@@ -71,6 +75,7 @@ export interface CasperGuardSigner {
   sign(input: {
     decisionId: string;
     intent: CasperGuardIntent;
+    agentId?: string;
   }): Promise<{
     signedHeaderHash: string;
     headers?: Record<string, string>;
@@ -79,10 +84,17 @@ export interface CasperGuardSigner {
   }>;
 }
 
+/** D-5⑤/E.2: optional live-quote lookup so a swap's min-received is checked against the market,
+ * not just the intent's self-reported slippageBps. Absent = today's behavior (self-report only). */
+export interface CasperGuardTradeQuoter {
+  quoteAmountOut(input: { fromAsset: string; toAsset: string; amount: string }): Promise<bigint>;
+}
+
 export interface CasperGuardPolicyDeps {
   pool: pg.Pool;
   redis: Redis;
   signer: CasperGuardSigner;
+  tradeQuoter?: CasperGuardTradeQuoter;
 }
 
 export interface CasperGuardReleaseDeps {
@@ -143,7 +155,7 @@ export async function authorizeCasperGuardIntent(
     });
     if (existing) return authorizeResultFromExisting(existing, params);
 
-    const decision = await evaluateCasperGuardPolicy(deps.redis, params);
+    const decision = await evaluateCasperGuardPolicy(deps.redis, params, deps.tradeQuoter);
     if (!decision.allow) {
       await persistDeny(deps.pool, params, decision.reason);
       return { outcome: 'DENY', decisionId: params.decisionId, reason: decision.reason };
@@ -216,9 +228,15 @@ export async function authorizeCasperGuardIntent(
         return { outcome: 'DENY', decisionId: params.decisionId, reason: 'org_suspended' };
       }
 
+      if (await isAgentSuspended(deps.pool, { agentId: params.agentId, orgId: params.orgId })) {
+        await failReservedDecision(deps, params);
+        return { outcome: 'DENY', decisionId: params.decisionId, reason: 'agent_suspended' };
+      }
+
       const signed = await deps.signer.sign({
         decisionId: params.decisionId,
         intent: params.intent,
+        agentId: params.agentId,
       });
       const signedMarked = await markCasperGuardDecisionSigned(deps.pool, {
         decisionId: params.decisionId,
@@ -283,6 +301,7 @@ async function evaluateCasperGuardPolicy(
     policy: CasperGuardPolicy;
     now: number;
   },
+  tradeQuoter?: CasperGuardTradeQuoter,
 ): Promise<{ allow: true } | { allow: false; reason: CasperGuardDenyReason }> {
   if ((await redis.exists(keys.denyAll(params.orgId))) === 1) {
     return { allow: false, reason: 'org_suspended' };
@@ -341,6 +360,22 @@ async function evaluateCasperGuardPolicy(
       !tradePolicy.allowedRiskLabels.includes(params.intent.riskLabel)
     ) {
       return { allow: false, reason: 'trade_risk_exceeded' };
+    }
+
+    if (tradeQuoter) {
+      const quotedAmountOut = await tradeQuoter.quoteAmountOut({
+        fromAsset: casperGuardAssetRef(params.intent.fromAsset),
+        toAsset: casperGuardAssetRef(params.intent.toAsset),
+        amount: params.intent.amount,
+      });
+      const verified = verifyMinReceivedWithinSlippage({
+        quotedAmountOut,
+        maxSlippageBps: tradePolicy.maxSlippageBps,
+        intentMinReceived: BigInt(params.intent.minReceived),
+      });
+      if (!verified.ok) {
+        return { allow: false, reason: 'trade_risk_exceeded' };
+      }
     }
   }
 
@@ -514,8 +549,32 @@ function idempotencyFingerprint(params: {
   );
 }
 
+export interface RevokeAgentInFlightResult {
+  abortedDecisionIds: string[];
+  committedDecisionIds: string[];
+}
+
+/**
+ * D-2⑤ honest hard-stop for in-flight decisions on revoke: abort every decision not yet SIGNED
+ * (release its hold, mark FAILED_TERMINAL); leave SIGNED/BROADCASTING/EXPIRY_CHECK/SETTLED
+ * decisions alone to settle. Returns both sets so the caller can record "revoked mid-flight, N
+ * committed" in the audit trail.
+ */
+export async function revokeAgentInFlight(
+  deps: Pick<CasperGuardPolicyDeps, 'pool' | 'redis'>,
+  params: { agentId: string; orgId: string },
+): Promise<RevokeAgentInFlightResult> {
+  const { reserved, committed } = await listCasperGuardDecisionsForRevoke(deps.pool, params);
+
+  for (const decisionId of reserved) {
+    await failReservedDecision(deps, { agentId: params.agentId, decisionId });
+  }
+
+  return { abortedDecisionIds: reserved, committedDecisionIds: committed };
+}
+
 async function failReservedDecision(
-  deps: CasperGuardPolicyDeps,
+  deps: Pick<CasperGuardPolicyDeps, 'pool' | 'redis'>,
   params: { agentId: string; decisionId: string },
 ): Promise<void> {
   const transitioned = await markCasperGuardDecisionTerminal(deps.pool, {

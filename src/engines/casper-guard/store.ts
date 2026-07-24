@@ -448,6 +448,37 @@ export async function failCasperGuardAuditAnchor(pool: pg.Pool, anchorId: string
   return result.rowCount === 1;
 }
 
+const CASPER_GUARD_COMMITTED_STATUSES = ['SIGNED', 'BROADCASTING', 'EXPIRY_CHECK', 'SETTLED'];
+
+/**
+ * For revoke's in-flight handling (D-2⑤): split an agent's non-terminal decisions into those not
+ * yet SIGNED (safe to abort) and those SIGNED or further along (must be left to settle).
+ */
+export async function listCasperGuardDecisionsForRevoke(
+  pool: pg.Pool,
+  input: { agentId: string; orgId: string },
+): Promise<{ reserved: string[]; committed: string[] }> {
+  const result = await pool.query<{ decision_id: string; status: string }>(
+    `SELECT decision_id, status
+       FROM casper_guard_decisions
+      WHERE agent_id = $1
+        AND org_id = $2
+        AND status NOT IN ('DENIED', 'FAILED_TERMINAL', 'EXPIRED')`,
+    [input.agentId, input.orgId],
+  );
+
+  const reserved: string[] = [];
+  const committed: string[] = [];
+  for (const row of result.rows) {
+    if (row.status === 'RESERVED') {
+      reserved.push(row.decision_id);
+    } else if (CASPER_GUARD_COMMITTED_STATUSES.includes(row.status)) {
+      committed.push(row.decision_id);
+    }
+  }
+  return { reserved, committed };
+}
+
 export async function readCasperGuardDecision(
   pool: pg.Pool,
   decisionId: string,

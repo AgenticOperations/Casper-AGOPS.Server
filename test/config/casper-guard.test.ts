@@ -152,4 +152,38 @@ describe('AgentOps runtime config', () => {
       headers: { [CASPER_X402_HEADER_NAME]: 'payment-header-value' },
     });
   });
+
+  it('forwards agentId to getClientSigner when the caller supplies one (B.4 — per-agent delegated signing seam)', async () => {
+    createHeaderSpy.mockResolvedValue({
+      headerName: CASPER_X402_HEADER_NAME,
+      headerValue: 'payment-header-value',
+      headers: { [CASPER_X402_HEADER_NAME]: 'payment-header-value' },
+      payload: { x402Version: 2 },
+    });
+    const getClientSignerSpy = vi.fn(() => Promise.resolve(clientSigner));
+    const provider: CasperClientSignerProvider = {
+      mode: 'local-testnet',
+      getClientSigner: getClientSignerSpy,
+    };
+    const signer = createCasperGuardRuntimeSigner(provider);
+
+    await signer.sign({
+      decisionId: 'cgd_test',
+      agentId: 'agt_delegated_1',
+      intent: {
+        kind: 'x402-payment',
+        network: 'casper:casper-test',
+        resourceId: 'svc:casper-paid-api',
+        amount: '12',
+        asset: { kind: 'cep18', packageHash: 'a'.repeat(64), name: 'Test CEP18', version: '1' },
+        destination: `00${'b'.repeat(64)}`,
+        maxTimeoutSeconds: 900,
+      },
+    });
+
+    expect(getClientSignerSpy).toHaveBeenCalledWith({
+      network: 'casper:casper-test',
+      agentId: 'agt_delegated_1',
+    });
+  });
 });

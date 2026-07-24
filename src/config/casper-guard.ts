@@ -31,10 +31,19 @@ import {
 } from '../lib/casper/cspr-trade.js';
 import type { CasperGuardSigner } from '../engines/casper-guard/policy.js';
 import type { CasperGuardIntent, CasperGuardNetwork } from '../engines/casper-guard/types.js';
+import type pg from 'pg';
+import { EncryptedStoreVault, type KeyVault } from '../engines/custody/key-vault.js';
+import { createPgVaultBlobStore } from '../engines/custody/pg-vault-blob-store.js';
+import { createDelegationAwareSignerProvider } from '../engines/custody/vault-signer.js';
+
+export interface CasperGuardVaultContext {
+  pool: pg.Pool;
+  vault: KeyVault;
+}
 
 export interface CasperClientSignerProvider {
   mode: CasperSignerMode;
-  getClientSigner(input: { network: CasperNetwork }): Promise<CasperClientSigner>;
+  getClientSigner(input: { network: CasperNetwork; agentId?: string }): Promise<CasperClientSigner>;
 }
 
 interface NetworkSlotEnvFields {
@@ -108,7 +117,11 @@ function resolveSlotPemPath(pemPath: string, pemInline: string, tmpFileName: str
   return undefined;
 }
 
-function buildNetworkSlot(fields: NetworkSlotEnvFields, env: Env): CasperGuardNetworkSlot {
+function buildNetworkSlot(
+  fields: NetworkSlotEnvFields,
+  env: Env,
+  vaultCtx?: CasperGuardVaultContext,
+): CasperGuardNetworkSlot {
   const signerPemPath = resolveSlotPemPath(
     fields.signerPemPath,
     fields.signerPemInline,
@@ -120,12 +133,14 @@ function buildNetworkSlot(fields: NetworkSlotEnvFields, env: Env): CasperGuardNe
         return undefined;
       case 'local-testnet': {
         if (!signerPemPath) return undefined;
-        return createCasperGuardRuntimeSigner(
-          CasperSignerProvider.localTestnet({
-            pemPath: signerPemPath,
-            algorithm: fields.signerAlgorithm,
-          }),
-        );
+        const fallbackProvider = CasperSignerProvider.localTestnet({
+          pemPath: signerPemPath,
+          algorithm: fields.signerAlgorithm,
+        });
+        const provider = vaultCtx
+          ? createDelegationAwareSignerProvider({ pool: vaultCtx.pool, vault: vaultCtx.vault, fallbackProvider })
+          : fallbackProvider;
+        return createCasperGuardRuntimeSigner(provider);
       }
       case 'operator-wallet':
         return undefined;
@@ -216,12 +231,26 @@ function buildNetworkSlot(fields: NetworkSlotEnvFields, env: Env): CasperGuardNe
   };
 }
 
-export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
+export function buildCasperGuardDeps(env: Env, ctx?: { pool?: pg.Pool }): CasperGuardDeps {
   const serviceDestinations = parseServiceDestinations(env.CASPER_GUARD_SERVICE_DESTINATIONS);
   const enabledNetworks = parseNetworks(env.CASPER_GUARD_NETWORKS);
 
+  // Milestone B (D-3): per-agent delegated signing is only wired in when BOTH a pool (to look up
+  // delegated_keys / agent_vault_keys) and a vault master secret are available. Either missing =
+  // every network slot's signer stays the plain custodial provider (today's behavior, unchanged).
+  const vaultCtx: CasperGuardVaultContext | undefined =
+    ctx?.pool && env.CASPER_GUARD_VAULT_MASTER_SECRET !== ''
+      ? {
+          pool: ctx.pool,
+          vault: new EncryptedStoreVault({
+            masterSecretHex: env.CASPER_GUARD_VAULT_MASTER_SECRET,
+            store: createPgVaultBlobStore(ctx.pool),
+          }),
+        }
+      : undefined;
+
   const testnetFields = testnetSlotEnvFields(env);
-  const testnetSlot = buildNetworkSlot(testnetFields, env);
+  const testnetSlot = buildNetworkSlot(testnetFields, env, vaultCtx);
 
   const byNetwork: CasperGuardDeps['byNetwork'] = {
     'casper:casper-test': testnetSlot,
@@ -233,7 +262,7 @@ export function buildCasperGuardDeps(env: Env): CasperGuardDeps {
       mainnetFields.signerMode !== 'disabled' &&
       (mainnetFields.signerPemPath !== '' || mainnetFields.signerPemInline !== '');
     if (mainnetOdraConfigured || mainnetSignerConfigured) {
-      byNetwork['casper:casper'] = buildNetworkSlot(mainnetFields, env);
+      byNetwork['casper:casper'] = buildNetworkSlot(mainnetFields, env, vaultCtx);
     }
   }
 
@@ -264,7 +293,10 @@ export function createCasperGuardRuntimeSigner(
   return {
     kind: provider.mode,
     async sign(input) {
-      const signer = await provider.getClientSigner({ network: input.intent.network });
+      const signer = await provider.getClientSigner({
+        network: input.intent.network,
+        ...(input.agentId ? { agentId: input.agentId } : {}),
+      });
       if (input.intent.kind === 'x402-payment') {
         const signed = await createCasperX402PaymentHeader({
           signer,

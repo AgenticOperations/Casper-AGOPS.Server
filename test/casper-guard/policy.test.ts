@@ -900,4 +900,113 @@ describe('AgentOps policy and hold lifecycle', () => {
       hold: { status: 'RELEASED' },
     });
   });
+
+  it('D-5②/D.2: a data-only agent (allowedActions has no cspr-trade) attempting a swap is denied action_not_allowed', async ({
+    skip,
+  }) => {
+    if (!stores) return skip();
+    const { agentId, orgId } = await seedAgent(stores.pool, stores.redis, 100);
+    let signCalls = 0;
+    const signer = signerReturning('sha256:should-not-exist', () => {
+      signCalls += 1;
+    });
+
+    const dataOnlyPolicy: CasperGuardPolicy = {
+      ...allowPolicy,
+      allowedActions: ['x402-payment'], // no cspr-trade — matches a data/risk fleet role
+    };
+
+    const result = await authorizeCasperGuardIntent(
+      { pool: stores.pool, redis: stores.redis, signer },
+      {
+        decisionId: 'cgd_policy_action_not_allowed',
+        holdId: 'cgh_policy_action_not_allowed',
+        idempotencyKey: 'idem_policy_action_not_allowed',
+        orgId,
+        agentId,
+        intent: csprTradeIntent(),
+        policy: dataOnlyPolicy,
+        now: 2_000_000,
+      },
+    );
+
+    expect(result).toEqual({
+      outcome: 'DENY',
+      decisionId: 'cgd_policy_action_not_allowed',
+      reason: 'action_not_allowed',
+    });
+    expect(signCalls).toBe(0);
+  });
+
+  it('D-5⑤/E.2: a swap whose min-received is worse than the live quote minus allowed slippage is denied', async ({
+    skip,
+  }) => {
+    if (!stores) return skip();
+    const { agentId, orgId } = await seedAgent(stores.pool, stores.redis, 100);
+    let signCalls = 0;
+    const signer = signerReturning('sha256:should-not-exist', () => {
+      signCalls += 1;
+    });
+    // Live quote says 10 out; allowPolicy.trade.maxSlippageBps = 100 (1%) -> floor = 9.9,
+    // rounds to 9 with integer bigint math (10 * 9900 / 10000 = 9). Use a stricter case:
+    // quote = 100 -> floor = 99; intent claims min_received = 90, well below the floor.
+    const tradeQuoter = { quoteAmountOut: async () => 100n };
+
+    const bad = await authorizeCasperGuardIntent(
+      { pool: stores.pool, redis: stores.redis, signer, tradeQuoter },
+      {
+        decisionId: 'cgd_policy_quote_bad',
+        holdId: 'cgh_policy_quote_bad',
+        idempotencyKey: 'idem_policy_quote_bad',
+        orgId,
+        agentId,
+        intent: normalizeCasperGuardIntent({
+          kind: 'cspr-trade',
+          network: 'casper:casper-test',
+          resource_id: 'cspr.trade:swap',
+          amount: '10',
+          from_asset: { kind: 'native', symbol: 'CSPR' },
+          to_asset: { kind: 'cep18', package_hash: 'c'.repeat(64), name: 'Token', version: '1' },
+          min_received: '90',
+          slippage_bps: 100,
+          route_id: 'route_1',
+          risk_label: 'medium',
+        }),
+        policy: allowPolicy,
+        now: 2_000_000,
+      },
+    );
+    expect(bad).toEqual({
+      outcome: 'DENY',
+      decisionId: 'cgd_policy_quote_bad',
+      reason: 'trade_risk_exceeded',
+    });
+    expect(signCalls).toBe(0);
+
+    const good = await authorizeCasperGuardIntent(
+      { pool: stores.pool, redis: stores.redis, signer, tradeQuoter },
+      {
+        decisionId: 'cgd_policy_quote_good',
+        holdId: 'cgh_policy_quote_good',
+        idempotencyKey: 'idem_policy_quote_good',
+        orgId,
+        agentId,
+        intent: normalizeCasperGuardIntent({
+          kind: 'cspr-trade',
+          network: 'casper:casper-test',
+          resource_id: 'cspr.trade:swap',
+          amount: '10',
+          from_asset: { kind: 'native', symbol: 'CSPR' },
+          to_asset: { kind: 'cep18', package_hash: 'c'.repeat(64), name: 'Token', version: '1' },
+          min_received: '99', // at the floor (100 * 9900/10000 = 99)
+          slippage_bps: 100,
+          route_id: 'route_1',
+          risk_label: 'medium',
+        }),
+        policy: allowPolicy,
+        now: 2_000_001,
+      },
+    );
+    expect(good.outcome).toBe('ALLOW');
+  });
 });

@@ -1,0 +1,22 @@
+[package]
+name = "revoke-delegated-key"
+version = "0.1.0"
+authors = ["AgentOps"]
+edition = "2021"
+
+[dependencies]
+casper-contract = "5.1.1"
+casper-types = "6.1.0"
+
+[[bin]]
+name = "revoke-delegated-key"
+path = "src/main.rs"
+bench = false
+doctest = false
+test = false
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

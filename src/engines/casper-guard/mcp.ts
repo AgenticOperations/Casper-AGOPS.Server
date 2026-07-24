@@ -1,7 +1,15 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { lcpDiscover } from '../../lib/lcp/discover.js';
 import { authenticateAgent } from '../oracle/auth.js';
+import { authForRoute } from '../identity/access/route-guard.js';
+import { registerAgent, createPolicyVersion, assignPolicy } from '../control/store.js';
+import { attachTradingFlow } from '../control/attach-trading-flow.js';
+import { revokeAgentDelegation } from '../identity/delegation/revoke-agent-delegation.js';
+import { suspendAgent } from '../control/kill-switch.js';
+import { revokeDelegatedKey } from '../identity/delegation/delegated-keys-store.js';
+import type { CompiledTradingFlow } from '../control/trading-flow.js';
+import { revokeAgentInFlight } from './policy.js';
 import { normalizeCasperGuardIntent } from './types.js';
 import {
   auditExport,
@@ -139,7 +147,7 @@ const INTENT_SCHEMA = {
   ],
 } as const;
 
-const TOOL_DESCRIPTORS = [
+export const TOOL_DESCRIPTORS = [
   {
     name: 'casper_guard_policy_check',
     description: 'Dry-run a AgentOps intent against the agent policy without signing. Returns allowed_resource_ids and allowed_networks on DENY so the caller can correct the intent.',
@@ -288,6 +296,59 @@ const TOOL_DESCRIPTORS = [
       required: [],
     },
   },
+  {
+    name: 'casper_guard_create_agent',
+    description: [
+      'FLEET MANAGEMENT (admin/operator use only — requires an sk_ operator key, not an agent ag_ key).',
+      'Create a new agent under the calling operator\'s org and return its ag_ API key ONCE.',
+      'Use this to provision a new member of a trading fleet (Milestone D) before attaching a trading flow.',
+    ].join(' '),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', minLength: 1, maxLength: 200 },
+        team_id: { type: 'string', description: 'Optional — groups agents into a fleet (D-6②).' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'casper_guard_attach_trading_flow',
+    description: [
+      'FLEET MANAGEMENT (admin/operator use only — requires an sk_ operator key, not an agent ag_ key).',
+      'Attach a compiled trading flow (Milestone D — e.g. a Data+Risk+Trader fleet template instance) to real agents.',
+      'Writes a spend + allocation policy per role and assigns the spend policy to that role\'s agent.',
+      'The flow must already be compiled (compileTradingFlow / instantiateFleetTemplate) before calling this tool.',
+    ].join(' '),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        flow: { type: 'object', description: 'A CompiledTradingFlow object (name, version, roles[]).' },
+        role_assignments: {
+          type: 'object',
+          description: 'Map of role name -> agent_id, one entry per role in the flow.',
+        },
+      },
+      required: ['flow', 'role_assignments'],
+    },
+  },
+  {
+    name: 'casper_guard_revoke_agent',
+    description: [
+      'FLEET MANAGEMENT (admin/operator use only — requires an sk_ operator key, not an agent ag_ key).',
+      'Full delegated-key revoke (D-2④ honest hard-stop): instantly suspends the agent (kill-switch, no on-chain wait),',
+      'revokes its delegated_keys record, and aborts any still-unsigned in-flight decisions while leaving',
+      'already-signed decisions to settle normally. Does NOT itself submit the on-chain revoke deploy —',
+      'that is a separate user/SDK-signed step (buildRevokeDeployArgs).',
+    ].join(' '),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string' },
+      },
+      required: ['agent_id'],
+    },
+  },
 ] as const;
 
 export function registerCasperGuardMcpRoute(app: FastifyInstance): void {
@@ -363,6 +424,18 @@ export function registerCasperGuardMcpRoute(app: FastifyInstance): void {
           return reply
             .code(200)
             .send(rpcToolResult(rpc.id, listServicesTool()));
+        case 'casper_guard_create_agent':
+          return reply
+            .code(200)
+            .send(rpcToolResult(rpc.id, await createAgentTool(app, request, call.data.arguments)));
+        case 'casper_guard_attach_trading_flow':
+          return reply
+            .code(200)
+            .send(rpcToolResult(rpc.id, await attachTradingFlowTool(app, request, call.data.arguments)));
+        case 'casper_guard_revoke_agent':
+          return reply
+            .code(200)
+            .send(rpcToolResult(rpc.id, await revokeAgentTool(app, request, call.data.arguments)));
         default:
           return reply.code(200).send(rpcError(rpc.id, -32602, 'unknown_tool'));
       }
@@ -465,6 +538,66 @@ async function auditExportTool(
   const auth = await authenticateAgent(app.deps.pg, authz);
   if (!auth.ok) throw new Error(auth.reason);
   return auditExport(await readTenantDecision(app, auth.agent.orgId, requireString(args.decision_id, 'decision_id')));
+}
+
+/**
+ * F.2 fleet-management tools. Unlike every other tool in this file (agent ag_ auth via
+ * authenticateAgent), these three are OPERATOR-scoped — they use the same sk_/session admin auth
+ * (authForRoute) as the REST routes in delegation-routes.ts, since creating agents, attaching
+ * trading flows, and revoking an agent's delegated key are all admin-level actions. An agent's own
+ * ag_ key does NOT satisfy this check.
+ */
+async function createAgentTool(app: FastifyInstance, request: FastifyRequest, args: Record<string, unknown>) {
+  const auth = await authForRoute(app, request, 'admin');
+  if (!auth.ok) throw new Error(auth.reason);
+  const name = requireString(args.name, 'name');
+  const teamId = typeof args.team_id === 'string' ? args.team_id : undefined;
+
+  const { agent, apiKey } = await registerAgent(app.deps.pg, {
+    orgId: auth.principal.orgId,
+    name,
+    ...(teamId ? { teamId } : {}),
+  });
+  return {
+    agent: { id: agent.id, name: agent.name, org_id: agent.orgId, status: agent.status },
+    api_key: apiKey.token, // shown ONCE
+  };
+}
+
+async function attachTradingFlowTool(app: FastifyInstance, request: FastifyRequest, args: Record<string, unknown>) {
+  const auth = await authForRoute(app, request, 'admin');
+  if (!auth.ok) throw new Error(auth.reason);
+  if (typeof args.flow !== 'object' || args.flow === null) throw new Error('invalid_flow');
+  if (typeof args.role_assignments !== 'object' || args.role_assignments === null) {
+    throw new Error('invalid_role_assignments');
+  }
+
+  const result = await attachTradingFlow(
+    { pool: app.deps.pg, createPolicyVersion, assignPolicy },
+    {
+      orgId: auth.principal.orgId,
+      flow: args.flow as CompiledTradingFlow,
+      roleAssignments: args.role_assignments as Record<string, string>,
+    },
+  );
+  return { role_assignments: result.roleAssignments };
+}
+
+async function revokeAgentTool(app: FastifyInstance, request: FastifyRequest, args: Record<string, unknown>) {
+  const auth = await authForRoute(app, request, 'admin');
+  if (!auth.ok) throw new Error(auth.reason);
+  const agentId = requireString(args.agent_id, 'agent_id');
+
+  const result = await revokeAgentDelegation(
+    { pool: app.deps.pg, redis: app.deps.redis, suspendAgent, revokeDelegatedKey, revokeAgentInFlight },
+    { agentId, orgId: auth.principal.orgId },
+  );
+  return {
+    agent_id: agentId,
+    agent_suspended: result.agentSuspended,
+    aborted_decision_ids: result.abortedDecisionIds,
+    committed_decision_ids: result.committedDecisionIds,
+  };
 }
 
 async function policyCheckTool(
