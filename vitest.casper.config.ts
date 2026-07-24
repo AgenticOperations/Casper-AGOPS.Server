@@ -18,6 +18,7 @@ export default defineConfig({
       'test/control/default-org-policies.test.ts',
       'test/control/ids.test.ts',
       'test/control/policy-routes.test.ts',
+      'test/control/graph-builder/**/*.test.ts',
       'test/identity/**/*.test.ts',
       'test/infra/healthz.test.ts',
       'test/infra/identity-migrations.test.ts',

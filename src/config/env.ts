@@ -138,6 +138,12 @@ const EnvSchema = z.object({
   // the limiter set a tiny AUTH_RATE_LIMIT via envOverride.
   AUTH_RATE_LIMIT: z.coerce.number().int().positive().default(10),
   AUTH_RATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+
+  // Milestone H (visual/prompt workflow builder) — prompt -> graph generation only. The LLM here
+  // PROPOSES config; this key is never read by any signer/deploy/vault path (see
+  // graph-builder/prompt-to-graph.ts header). Empty = the endpoint 503s honestly.
+  ANTHROPIC_API_KEY: z.string().default(''),
+  ANTHROPIC_GRAPH_MODEL: z.string().min(1).default('claude-sonnet-4-5'),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
