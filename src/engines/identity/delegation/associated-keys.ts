@@ -15,7 +15,12 @@
  * (`master_weight`) in the same deploy.
  */
 
-import { PublicKey } from 'casper-js-sdk';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+// casper-js-sdk is CJS; a static ESM named import fails at runtime under the server's ESM loader,
+// so load it via createRequire (sync) — mirrors the repo's CJS-interop convention (odra-anchorer.ts).
+const { PublicKey } = require('casper-js-sdk') as typeof import('casper-js-sdk');
 
 /**
  * Derive the BARE hex account hash (no `account-hash-` prefix) from a Casper PUBLIC key hex.
