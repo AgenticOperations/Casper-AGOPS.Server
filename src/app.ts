@@ -32,6 +32,7 @@ import {
 } from './engines/casper-guard/routes.js';
 import { registerCasperGuardMcpRoute } from './engines/casper-guard/mcp.js';
 import type { KeyVault } from './engines/custody/key-vault.js';
+import type { AssociatedKeyVerifier } from './engines/identity/delegation/verify-associated-key.js';
 
 export interface AppDeps {
   env: Env;
@@ -61,6 +62,12 @@ export interface AppDeps {
    * stay custodial. Built ONCE in server.ts and shared with buildCasperGuardDeps to avoid two vaults.
    */
   vault?: KeyVault;
+  /**
+   * Task 5 grant-confirm seam: the on-chain verifier that proves the master-signed grant deploy
+   * executed AND the agent key is associated at weight 1. Absent → the confirm route builds the live
+   * RPC verifier. Tests inject a stub so they do NO network I/O.
+   */
+  associatedKeyVerifier?: AssociatedKeyVerifier;
   /** Optional log destination; tests inject a capturing stream to assert redaction. */
   logStream?: { write(msg: string): void };
 }

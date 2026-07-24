@@ -9,6 +9,8 @@ import { revokeDelegatedKey, readActiveDelegatedKeyRow } from './delegated-keys-
 import { buildGrantDeployForBrowserSigning, accountHashFromPublicKeyHex } from './associated-keys.js';
 import { grantWasmBase64 } from './grant-wasm.js';
 import { resolveRequestNetwork, CASPER_NETWORK_HEADER } from '../../casper-guard/network-header.js';
+import { markDelegatedKeyGranted } from './delegated-keys-store.js';
+import { createLiveAssociatedKeyVerifier } from './verify-associated-key.js';
 import { revokeAgentInFlight } from '../../casper-guard/policy.js';
 import type { CompiledTradingFlow } from '../../control/trading-flow.js';
 
@@ -27,6 +29,11 @@ const AttachFlowBody = z.object({
 // Casper public keys are 01=ed25519 or 02=secp256k1 followed by hex.
 const GrantInitBody = z.object({
   master_public_key: z.string().regex(/^0[12][0-9a-fA-F]+$/),
+});
+
+const GrantConfirmBody = z.object({
+  deploy_hash: z.string().regex(/^[0-9a-fA-F]{64}$/),
+  master_public_key: z.string().regex(/^0[12][0-9a-fA-F]+$/).optional(),
 });
 
 export function registerDelegationRoutes(app: FastifyInstance): void {
@@ -113,5 +120,59 @@ export function registerDelegationRoutes(app: FastifyInstance): void {
       wasm_base64: grantWasmBase64(),
       chain_name: chainName,
     });
+  });
+
+  // Task 5: confirm the master-signed grant deploy landed on-chain, then promote the delegated key
+  // to `granted`. The server signs NOTHING here — it VERIFIES an on-chain result (deploy executed
+  // AND agent key associated at weight 1) and flips a DB flag. NO BLIND PROMOTE: a returned deploy
+  // hash is NOT proof; promotion requires verifier.ok && weight===1.
+  app.post('/v1/agents/:id/grant-delegated-key/confirm', async (request, reply) => {
+    const { pg: pool, env } = app.deps;
+    const auth = await authForRoute(app, request, 'admin');
+    if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
+    const { id: agentId } = request.params as { id: string };
+    const orgId = auth.principal.orgId;
+
+    const owns = await pool.query('SELECT 1 FROM agents WHERE id = $1 AND org_id = $2', [agentId, orgId]);
+    if (owns.rowCount === 0) return reply.code(404).send({ error: 'agent_not_found' });
+
+    const parsed = GrantConfirmBody.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_body' });
+
+    const resolved = resolveRequestNetwork(request.headers[CASPER_NETWORK_HEADER]);
+    if (!resolved.ok) return reply.code(400).send({ error: 'invalid_network' });
+    const rpcUrl =
+      resolved.network === 'casper:casper'
+        ? env.CASPER_GUARD_MAINNET_FACILITATOR_RPC_URL
+        : env.CASPER_GUARD_FACILITATOR_RPC_URL;
+
+    const row = await readActiveDelegatedKeyRow(pool, agentId);
+    if (!row) return reply.code(409).send({ error: 'no_delegated_key' });
+    // Idempotent: already promoted → return granted without re-verifying.
+    if (row.grantState === 'granted') {
+      return reply.code(200).send({ agent_id: agentId, grant_state: 'granted' });
+    }
+
+    const stubVerifier = app.deps.associatedKeyVerifier;
+    if (!stubVerifier && !rpcUrl) return reply.code(503).send({ error: 'rpc_not_configured' });
+    const verifier = stubVerifier ?? createLiveAssociatedKeyVerifier();
+
+    const result = await verifier.verify({
+      masterAccountHash: parsed.data.master_public_key
+        ? accountHashFromPublicKeyHex(parsed.data.master_public_key)
+        : '',
+      agentAccountHash: accountHashFromPublicKeyHex(row.publicKey),
+      deployHash: parsed.data.deploy_hash,
+      rpcUrl,
+    });
+
+    if (result.ok && result.weight === 1) {
+      await markDelegatedKeyGranted(pool, { agentId, deployHash: parsed.data.deploy_hash });
+      return reply.code(200).send({ agent_id: agentId, grant_state: 'granted' });
+    }
+    if (!result.ok && result.reason === 'not_finalized_yet') {
+      return reply.code(202).send({ grant_state: 'pending', reason: 'not_finalized_yet' });
+    }
+    return reply.code(422).send({ error: 'grant_not_confirmed' });
   });
 }
