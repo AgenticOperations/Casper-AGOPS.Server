@@ -54,3 +54,43 @@ export async function readActiveDelegatedKey(
   const row = result.rows[0];
   return row ? { id: row.id, agentId: input.agentId, publicKey: row.public_key } : null;
 }
+
+/** Half-2: promote the agent's ACTIVE delegated key to on-chain-granted after the master-signed
+ * update_associated_keys deploy is confirmed. Idempotent (re-confirming the same hash is a no-op). */
+export async function markDelegatedKeyGranted(
+  pool: pg.Pool,
+  input: { agentId: string; deployHash: string },
+): Promise<boolean> {
+  const res = await pool.query(
+    `UPDATE delegated_keys
+        SET grant_state = 'granted', grant_deploy_hash = $2, granted_on_chain_at = now()
+      WHERE agent_id = $1 AND status = 'ACTIVE'`,
+    [input.agentId, input.deployHash],
+  );
+  return (res.rowCount ?? 0) > 0;
+}
+
+export interface ActiveDelegatedKeyRow {
+  id: string;
+  publicKey: string;
+  grantState: 'pending' | 'granted';
+  grantDeployHash: string | null;
+}
+
+/** The agent's ACTIVE delegated key with its on-chain grant state (for confirm + UI). */
+export async function readActiveDelegatedKeyRow(
+  pool: pg.Pool,
+  agentId: string,
+): Promise<ActiveDelegatedKeyRow | null> {
+  const res = await pool.query<{
+    id: string; public_key: string; grant_state: 'pending' | 'granted'; grant_deploy_hash: string | null;
+  }>(
+    `SELECT id, public_key, grant_state, grant_deploy_hash
+       FROM delegated_keys WHERE agent_id = $1 AND status = 'ACTIVE'`,
+    [agentId],
+  );
+  const r = res.rows[0];
+  return r
+    ? { id: r.id, publicKey: r.public_key, grantState: r.grant_state, grantDeployHash: r.grant_deploy_hash }
+    : null;
+}
