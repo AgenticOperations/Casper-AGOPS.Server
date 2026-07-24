@@ -73,16 +73,32 @@ export function createLiveAssociatedKeyVerifier(): AssociatedKeyVerifier {
       } catch (e) {
         if ((e as Error).message !== 'try_deploy') return { ok: false, reason: 'rpc_error' };
 
-        // Casper 1.x fallback: info_get_deploy
+        // info_get_deploy — the grant is submitted as a 1.x Deploy, but a Casper 2.0 node returns
+        // the deploy's result under `execution_info.execution_result.Version2` (same shape as
+        // info_get_transaction), NOT the legacy `execution_results[]` array. Handle BOTH: the 2.0
+        // execution_info shape first, then the pre-2.0 array for older nodes.
         try {
           const deployBody = (await rpcPost('info_get_deploy', { deploy_hash: deployHash })) as {
             result?: {
+              execution_info?: {
+                execution_result?: { Version2?: { error_message?: string | null }; Version1?: unknown };
+              };
               execution_results?: Array<{ result?: { Success?: unknown; Failure?: unknown } }>;
             };
           };
-          const execs = deployBody.result?.execution_results ?? [];
-          if (execs.length === 0) return { ok: false, reason: 'not_finalized_yet' };
-          succeeded = !!execs[0]?.result?.Success;
+
+          // Casper 2.0 shape: execution_info.execution_result.Version2 (matches info_get_transaction).
+          const execInfo = deployBody.result?.execution_info;
+          if (execInfo) {
+            const v2 = execInfo.execution_result?.Version2;
+            if (!v2) return { ok: false, reason: 'not_finalized_yet' };
+            succeeded = v2.error_message == null;
+          } else {
+            // Pre-2.0 shape: execution_results[] array.
+            const execs = deployBody.result?.execution_results ?? [];
+            if (execs.length === 0) return { ok: false, reason: 'not_finalized_yet' };
+            succeeded = !!execs[0]?.result?.Success;
+          }
         } catch {
           return { ok: false, reason: 'rpc_error' };
         }
