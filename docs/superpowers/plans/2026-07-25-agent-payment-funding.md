@@ -84,7 +84,7 @@ fall-back-to-current-behavior guards.
 - Create: `src/lib/casper/cep18-token-client.ts`
 - Test: `test/casper/cep18-token-client.test.ts`
 
-- [ ] **Step 1: Write the failing test** (interface + arg-shape contract, with an injected fake sdk-call recorder — no real chain)
+- [x] **Step 1: Write the failing test** (interface + arg-shape contract, with an injected fake sdk-call recorder — no real chain)
 
 ```typescript
 import { describe, it, expect, vi } from 'vitest';
@@ -105,12 +105,12 @@ describe('cep18-token-client arg builders', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pnpm vitest run test/casper/cep18-token-client.test.ts`
 Expected: FAIL — module/functions not defined.
 
-- [ ] **Step 3: Write minimal implementation** (pure arg descriptors + injectable submitter interface; the live SDK mapping is a thin adapter validated in Task 2 against the real chain)
+- [x] **Step 3: Write minimal implementation** (pure arg descriptors + injectable submitter interface; the live SDK mapping is a thin adapter validated in Task 2 against the real chain)
 
 ```typescript
 // A submitter that performs an operator-signed typed contract call. Live impl uses casper-js-sdk;
@@ -137,12 +137,12 @@ export function buildWcsprDepositArgs(p: { amountMotes: string }): { amount: ClT
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `pnpm vitest run test/casper/cep18-token-client.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/casper/cep18-token-client.ts test/casper/cep18-token-client.test.ts
@@ -155,25 +155,30 @@ git commit -m "feat(casper): typed CEP-18 arg builders for WCSPR transfer/deposi
 - Modify: `src/lib/casper/cep18-token-client.ts` (add `createLiveCep18CallSubmitter`)
 - Test: `test/casper/cep18-token-client.test.ts` (adapter maps descriptors → sdk CLValues via injected sdk fake)
 
-- [ ] **Step 1: Write the failing test** — inject a fake `sdk` object capturing `CLValue.newCLKey`/`newCLUInt256`/`newCLUInt512`/`Key.newKey` calls, assert the adapter builds `ContractCallBuilder().byPackageHash().entryPoint().runtimeArgs().from().chainName().payment().build()` and signs. Mirror the structure of odra-anchorer usage.
+- [x] **Step 1: Write the failing test** — inject a fake `sdk` object capturing `CLValue.newCLKey`/`newCLUInt256`/`newCLUInt512`/`Key.newKey` calls, assert the adapter builds `ContractCallBuilder().byPackageHash().entryPoint().runtimeArgs().from().chainName().payment().build()` and signs. Mirror the structure of odra-anchorer usage.
 
-- [ ] **Step 2: Run test to verify it fails** — `pnpm vitest run test/casper/cep18-token-client.test.ts` → FAIL.
+- [x] **Step 2: Run test to verify it fails** — `pnpm vitest run test/casper/cep18-token-client.test.ts` → FAIL.
 
-- [ ] **Step 3: Implement `createLiveCep18CallSubmitter`** — copy the SDK-load + sign + putTransaction skeleton from `createLiveCasperDeploySubmitter` (odra-anchorer.ts:74-111), but map `Cep18TypedArgs` to real CLValues:
+- [x] **Step 3: Implement `createLiveCep18CallSubmitter`** — copy the SDK-load + sign + putTransaction skeleton from `createLiveCasperDeploySubmitter` (odra-anchorer.ts:74-111), but map `Cep18TypedArgs` to real CLValues:
   - `{ kind:'account-hash-key', rawHash }` → `sdk.CLValue.newCLKey(sdk.Key.newKey("account-hash-"+rawHash))`
   - `{ clType:'U256', value }` → `sdk.CLValue.newCLUInt256(value)`
   - `{ clType:'U512', value }` → `sdk.CLValue.newCLUInt512(value)`
   - Use `sdk.Args.fromMap`, `from(privateKey.publicKey)`, `payment(paymentMotes)`, CJS unwrap `mod.default ?? mod`.
 
-- [ ] **Step 4: Run test to verify it passes** — PASS.
+- [x] **Step 4: Run test to verify it passes** — PASS.
 
-- [ ] **Step 5: MANUAL CHAIN VALIDATION (record results in the plan).** Before trusting the adapter, run a throwaway script against testnet using the operator PEM to:
+- [x] **Step 5: MANUAL CHAIN VALIDATION (record results in the plan).** Before trusting the adapter, run a throwaway script against testnet using the operator PEM to:
   (a) `deposit` wrap 1 CSPR; confirm operator WCSPR increased (via `balance_of` / dictionary read). If the `deposit` amount CLType is wrong, correct U512↔U256 and re-run.
   (b) `transfer` 1 WCSPR to agent acct `1885b99…`; confirm the deploy EXECUTES (no `60001`). **Record the recipient CLType that succeeded** (expected `Key` account-hash) — `transfer` is not directly observed in the x402 package, so this run is its empirical confirmation.
   (c) **Sweep path pre-check (for Task 7):** confirm the deployed WCSPR exposes `transfer_with_authorization` (already used by the facilitator) and that an operator-submitted, agent-vault-signed authorization is accepted — a minimal end-to-end of the sweep direction (agent→operator) with a tiny amount, OR at minimum verify the entry point + arg shape so Task 7 isn't building blind.
   Delete the throwaway script after. **This step de-risks the exact CLType assumptions AND the sweep mechanism.**
 
-- [ ] **Step 6: Commit**
+  **VALIDATION RESULTS (2026-07-25, testnet, operator `60854d9e…`):**
+  - (a) `deposit` wrap 1 CSPR with amount as **U512** → tx `1c6db50e448b9136c3b3e9fb425d2c4f0de5926e81338437ad34a43883239acf` → **SUCCESS (executed, no error).** U512 CLType for `deposit` amount CONFIRMED.
+  - (b) `transfer` 0.5 WCSPR to agent `1885b99…` with recipient as **account-hash Key** + amount as **U256** → tx `f1af1c735cca69be59fcc14b891c7a663ef2899cd1f1fd026c81f79620292094` → **SUCCESS (executed, no error, no 60001).** Recipient-as-Key + U256 CLTypes CONFIRMED empirically (transfer is not observed in the x402 package, so this run is its confirmation).
+  - (c) Sweep pre-check: WCSPR package `hash-3d80df21…` resolves in `query_global_state` (`stored_value` present); `transfer_with_authorization` is already exercised by the facilitator payment path, so the entry point + arg shape used in Task 7 are grounded. Chain name for testnet is `casper-test` (note: `.env` `CASPER_GUARD_ODRA_CHAIN_NAME=casper` targets mainnet — the live submitter defaults to `casper-test`; verify the injected chainName matches the target network when wiring Task 6).
+
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/lib/casper/cep18-token-client.ts test/casper/cep18-token-client.test.ts
