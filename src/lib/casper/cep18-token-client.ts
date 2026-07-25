@@ -27,10 +27,15 @@ export interface Cep18CallSubmitter {
 }
 
 // Descriptor form is what tests assert; the live adapter maps these to real CLValues.
+// The first three cover CEP-18 transfer/deposit; the last three cover the extra
+// `transfer_with_authorization` fields (U64 validity, List<U8> nonce/signature, CLPublicKey).
 export type ClTypedArg =
   | { clType: 'U256'; value: string }
   | { clType: 'U512'; value: string }
-  | { kind: 'account-hash-key'; rawHash: string };
+  | { clType: 'U64'; value: string }
+  | { kind: 'account-hash-key'; rawHash: string }
+  | { kind: 'list-u8'; bytesHex: string }
+  | { kind: 'public-key'; publicKeyHex: string };
 export type Cep18TypedArgs = Record<string, ClTypedArg>;
 
 export function buildCep18TransferArgs(p: {
@@ -72,8 +77,14 @@ type CasperSdk = {
     newCLKey(key: unknown): unknown;
     newCLUInt256(val: string): unknown;
     newCLUInt512(val: string): unknown;
+    newCLUint64(val: number): unknown;
+    newCLList(elemType: unknown, elems: unknown[]): unknown;
+    newCLUint8(val: number): unknown;
+    newCLPublicKey(pk: unknown): unknown;
   };
+  CLTypeUInt8: unknown;
   Key: { newKey(s: string): unknown };
+  PublicKey: { fromHex(hex: string): unknown };
   ContractCallBuilder: new () => {
     byPackageHash(hash: string): {
       entryPoint(name: string): {
@@ -97,12 +108,30 @@ const importSdkDefault = async (): Promise<CasperSdk> => {
   return (mod.default ?? mod) as CasperSdk;
 };
 
+function hexToByteArray(hex: string): number[] {
+  const cleaned = hex.startsWith('0x') ? hex.slice(2) : hex;
+  const out: number[] = [];
+  for (let i = 0; i < cleaned.length; i += 2) out.push(parseInt(cleaned.slice(i, i + 2), 16));
+  return out;
+}
+
 function toClValue(sdk: CasperSdk, arg: ClTypedArg): unknown {
   if ('kind' in arg) {
-    return sdk.CLValue.newCLKey(sdk.Key.newKey('account-hash-' + arg.rawHash));
+    switch (arg.kind) {
+      case 'account-hash-key':
+        return sdk.CLValue.newCLKey(sdk.Key.newKey('account-hash-' + arg.rawHash));
+      case 'public-key':
+        return sdk.CLValue.newCLPublicKey(sdk.PublicKey.fromHex(arg.publicKeyHex));
+      case 'list-u8':
+        return sdk.CLValue.newCLList(
+          sdk.CLTypeUInt8,
+          hexToByteArray(arg.bytesHex).map((b) => sdk.CLValue.newCLUint8(b)),
+        );
+    }
   }
   if (arg.clType === 'U256') return sdk.CLValue.newCLUInt256(arg.value);
-  return sdk.CLValue.newCLUInt512(arg.value);
+  if (arg.clType === 'U512') return sdk.CLValue.newCLUInt512(arg.value);
+  return sdk.CLValue.newCLUint64(Number(arg.value)); // U64
 }
 
 /**

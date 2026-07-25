@@ -58,9 +58,26 @@ function registerCancelScript(redis: Redis): void {
   REGISTERED.add(redis);
 }
 
+/**
+ * Best-effort retire-time WCSPR sweep bundle (Task 7). Present only when funding is configured AND the
+ * agent has a delegated key/public key. `run` is `sweepAgentWcsprOnChain` bound to its deps; kept as an
+ * injected fn so teardown stays free of casper-js-sdk in unit tests.
+ */
+export interface TeardownSweep {
+  run(input: {
+    agentId: string;
+    agentAccountHash: string;
+    agentPublicKeyHex: string;
+  }): Promise<{ swept: bigint; txHash?: string }>;
+  agentAccountHash: string;
+  agentPublicKeyHex: string;
+  /** Amount to record in the residual marker if the sweep throws before reading the balance. */
+  residualAmountHint?: string;
+}
+
 export async function teardownAgent(
   deps: ProvisionDeps,
-  params: { orgId: string; agentId: string; now: number },
+  params: { orgId: string; agentId: string; now: number; sweep?: TeardownSweep },
 ): Promise<TeardownResult> {
   const { pool, redis, gateway } = deps;
   const { orgId, agentId, now } = params;
@@ -127,6 +144,24 @@ export async function teardownAgent(
       settlementTimestamp: new Date(now * 1000),
     });
     withdrawn = confirmed;
+  }
+
+  // 3. Best-effort WCSPR sweep back to the operator (Task 7). NEVER blocks retire: on any error we
+  //    record a residual marker (the operator reclaims out-of-band) and continue. Runs only when the
+  //    sweep bundle is present (funding configured + agent has a delegated public key).
+  if (params.sweep) {
+    try {
+      await params.sweep.run({
+        agentId,
+        agentAccountHash: params.sweep.agentAccountHash,
+        agentPublicKeyHex: params.sweep.agentPublicKeyHex,
+      });
+    } catch (err) {
+      // Residual marker: amount left un-swept in the agent account for out-of-band operator reclaim.
+      await redis.set(keys.agentSweepResidual(agentId), params.sweep.residualAmountHint ?? '0');
+      // eslint-disable-next-line no-console
+      console.error('agent WCSPR sweep failed on teardown (residual recorded):', agentId, err);
+    }
   }
 
   return { sweptPending, withdrawn };

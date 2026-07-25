@@ -50,6 +50,9 @@ export const keys = {
   /** Two-phase float counters for an agent (E5/E6). */
   floatConfirmed: (agentId: string) => `agent:${agentId}:float_confirmed`,
   floatPending: (agentId: string) => `agent:${agentId}:float_pending`,
+  /** Residual WCSPR left in an agent account when the retire-time sweep failed (best-effort/non-blocking).
+   *  Value = motes the operator still needs to reclaim out-of-band. Written only on a sweep error. */
+  agentSweepResidual: (agentId: string) => `agent:${agentId}:sweep_residual`,
   /** In-flight allocation record (hash): a submitted depositFor/topup awaiting on-chain finality
    *  (E5; written at L2, promoted/recorded at L3). Carries kind, amount, txRef, and PENDING state. */
   allocation: (allocationId: string) => `allocation:${allocationId}`,

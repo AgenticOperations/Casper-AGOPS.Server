@@ -365,25 +365,25 @@ When `agentAccountHash`/`funding` absent → behavior is byte-for-byte today's p
 - Modify: `src/engines/provisioning/teardown.ts` (after the confirmed-float reclaim, ~line 130)
 - Test: `test/custody/wcspr-authorization.test.ts`, `test/custody/agent-funding-sweep.test.ts`, `test/provisioning/teardown-onchain-sweep.test.ts`
 
-- [ ] **Step 1a: Write failing test for `wcspr-authorization.ts`** — with an injected vault fake, `buildVaultSignedTransferAuthorization({ vault, agentId, fromAccountHash, toAccountHash, amountMotes, publicKeyHex })` returns a payload whose signature is the 65-byte tagged vault signature (reuse the tag logic already added in vault-signer.ts), `from`/`to` as account-hash Keys, `amount` U256, a fresh 32-byte `nonce`, and `valid_after`/`valid_before` window. Assert arg CLTypes match the facilitator shape.
+- [x] **Step 1a: Write failing test for `wcspr-authorization.ts`** — with an injected vault fake, `buildVaultSignedTransferAuthorization({ vault, agentId, fromAccountHash, toAccountHash, amountMotes, publicKeyHex })` returns a payload whose signature is the 65-byte tagged vault signature (reuse the tag logic already added in vault-signer.ts), `from`/`to` as account-hash Keys, `amount` U256, a fresh 32-byte `nonce`, and `valid_after`/`valid_before` window. Assert arg CLTypes match the facilitator shape.
 
-- [ ] **Step 1b: Write failing tests for `sweepAgentWcsprOnChain` + teardown wiring:**
+- [x] **Step 1b: Write failing tests for `sweepAgentWcsprOnChain` + teardown wiring:**
   1. Agent has on-chain WCSPR → builds a vault-signed authorization agent→operator and the operator submits `transfer_with_authorization`; returns swept amount.
   2. Agent has zero WCSPR → no-op (no tx, no vault call).
   3. Sweep THROWS → `teardownAgent` does NOT abort; records a residual marker (a Redis key `agent:{id}:sweep_residual` = amount + a log line) — define the marker concretely.
   4. Existing teardown ledger reclaim unchanged (run existing `test/provisioning/teardown-sweep.test.ts`).
 
-- [ ] **Step 2: Run tests → FAIL.**
+- [x] **Step 2: Run tests → FAIL.**
 
-- [ ] **Step 3a: Implement `wcspr-authorization.ts`** — port `buildTransferWithAuthorizationArgs` (chunk-U7JH2PXO.mjs:375-397) into a typed descriptor + real-CLValue adapter (extend the Cep18 arg-builder from Chunk 1 with the `from/to/amount/valid_after/valid_before/nonce/public_key/signature` fields). Compute the EIP-712 digest the same way the client scheme does: import `hashTypedData`, `CASPER_DOMAIN_TYPES`, `transferWithAuthorizationTypes`, `buildDomain` from `@casper-ecosystem/casper-eip-712` (installed transitively via x402). The domain requires `buildDomain(name, version, network, "0x"+assetContractHash)` where `name`/`version` come from env (`DEMO_CSPR_TOKEN_NAME`, `DEMO_CSPR_TOKEN_VERSION`) and `asset` is the WCSPR contract hash — **inject these via deps, do NOT re-read env inside the module** (keeps the injected-seams invariant clean for the unit test). Nonce MUST be exactly 32 random bytes (the library hard-requires 32, chunk-U7JH2PXO.mjs:212). Sign the digest via `vault.signWith(agentId, digest)`, tag to 65 bytes (same helper as vault-signer.ts). Set `valid_after=0`, `valid_before=now+maxTimeoutSeconds`. NOTE (from reviewer): the domain reconstruction (name/version/asset sourcing) is the part most likely to need a second manual-validation iteration — Task 2 Step 5(c) de-risks it first.
+- [x] **Step 3a: Implement `wcspr-authorization.ts`** — port `buildTransferWithAuthorizationArgs` (chunk-U7JH2PXO.mjs:375-397) into a typed descriptor + real-CLValue adapter (extend the Cep18 arg-builder from Chunk 1 with the `from/to/amount/valid_after/valid_before/nonce/public_key/signature` fields). Compute the EIP-712 digest the same way the client scheme does: import `hashTypedData`, `CASPER_DOMAIN_TYPES`, `transferWithAuthorizationTypes`, `buildDomain` from `@casper-ecosystem/casper-eip-712` (installed transitively via x402). The domain requires `buildDomain(name, version, network, "0x"+assetContractHash)` where `name`/`version` come from env (`DEMO_CSPR_TOKEN_NAME`, `DEMO_CSPR_TOKEN_VERSION`) and `asset` is the WCSPR contract hash — **inject these via deps, do NOT re-read env inside the module** (keeps the injected-seams invariant clean for the unit test). Nonce MUST be exactly 32 random bytes (the library hard-requires 32, chunk-U7JH2PXO.mjs:212). Sign the digest via `vault.signWith(agentId, digest)`, tag to 65 bytes (same helper as vault-signer.ts). Set `valid_after=0`, `valid_before=now+maxTimeoutSeconds`. NOTE (from reviewer): the domain reconstruction (name/version/asset sourcing) is the part most likely to need a second manual-validation iteration — Task 2 Step 5(c) de-risks it first.
 
-- [ ] **Step 3b: Implement `sweepAgentWcsprOnChain(deps, { agentId, agentAccountHash, agentPublicKeyHex })`** — read agent WCSPR; if `0n`, return `{ swept: 0n }`. Else build the vault-signed authorization agent→operator, submit via the operator's `Cep18CallSubmitter.call({ entryPoint:'transfer_with_authorization', args, ... })`, return `{ swept, txHash }`.
+- [x] **Step 3b: Implement `sweepAgentWcsprOnChain(deps, { agentId, agentAccountHash, agentPublicKeyHex })`** — read agent WCSPR; if `0n`, return `{ swept: 0n }`. Else build the vault-signed authorization agent→operator, submit via the operator's `Cep18CallSubmitter.call({ entryPoint:'transfer_with_authorization', args, ... })`, return `{ swept, txHash }`.
 
-- [ ] **Step 3c: Wire into `teardownAgent`** — AFTER the confirmed-float reclaim (teardown.ts:130), inside a `try/catch`: call `sweepAgentWcsprOnChain`; on throw, `redis.set(keys residual marker)` + `log.error` and continue (never block retire). Only run when funding is configured (WCSPR pkg + operator set) and the agent has a delegated key/public key available.
+- [x] **Step 3c: Wire into `teardownAgent`** — AFTER the confirmed-float reclaim (teardown.ts:130), inside a `try/catch`: call `sweepAgentWcsprOnChain`; on throw, `redis.set(keys residual marker)` + `log.error` and continue (never block retire). Only run when funding is configured (WCSPR pkg + operator set) and the agent has a delegated key/public key available.
 
-- [ ] **Step 4: Run tests → PASS. Run full `pnpm vitest run test/provisioning/ test/custody/`.**
+- [x] **Step 4: Run tests → PASS. Run full `pnpm vitest run test/provisioning/ test/custody/`.**
 
-- [ ] **Step 5: Commit** `feat(custody): retire-time vault-signed WCSPR sweep back to operator (best-effort)`.
+- [x] **Step 5: Commit** `feat(custody): retire-time vault-signed WCSPR sweep back to operator (best-effort)`.
 
 ---
 

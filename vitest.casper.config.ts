@@ -27,6 +27,7 @@ export default defineConfig({
       'test/control/treasury-network.test.ts',
       'test/control/treasury-route-agent-funding.test.ts',
       'test/provisioning/deposit-onchain-funding.test.ts',
+      'test/provisioning/teardown-onchain-sweep.test.ts',
       'test/reports/ledger-reports.test.ts',
       'test/custody/**/*.test.ts',
       'test/identity/**/*.test.ts',
