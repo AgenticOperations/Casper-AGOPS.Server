@@ -20,9 +20,21 @@ type CasperSdkPublicKey = {
   };
 };
 
+// ed25519 algorithm-tag byte (casper-js-sdk KeyAlgorithm: ed25519 = 1). Casper serializes a
+// signature as [1-byte algorithm tag][64-byte raw signature] = 65 bytes. The vault only holds
+// ed25519 keys (key-vault.ts), so this is fixed — widen if a vault algorithm choice is ever added.
+const ED25519_ALGORITHM_TAG = 1;
+
 /**
  * Adapts a KeyVault (agent-scoped, raw-byte signing) to the CasperClientSigner shape the x402
  * client path expects. B.4 (D-3): each agent's delegated key signs only for that agent.
+ *
+ * SIGNATURE SHAPE: `signEIP712` MUST return the 65-byte Casper signature (1 algorithm-tag byte +
+ * 64 raw bytes) — the ExactCasperScheme hex-encodes the return verbatim, and the facilitator's
+ * on-chain settle rejects anything else with "signature must be 65 bytes hex". `vault.signWith`
+ * returns the RAW 64 bytes (privateKey.sign), so we prepend the tag here — exactly what the
+ * library's own signer does via `privateKey.signAndAddAlgorithmBytes`, and what
+ * vault-deploy-signer.ts does for the swap path.
  */
 export function createVaultCasperClientSigner(input: {
   vault: KeyVault;
@@ -33,7 +45,13 @@ export function createVaultCasperClientSigner(input: {
   return {
     publicKey: () => input.publicKeyHex,
     accountAddress: () => input.accountAddress,
-    signEIP712: (digest: Uint8Array) => input.vault.signWith(input.agentId, digest),
+    signEIP712: async (digest: Uint8Array) => {
+      const rawSignature = await input.vault.signWith(input.agentId, digest);
+      const tagged = new Uint8Array(1 + rawSignature.length);
+      tagged[0] = ED25519_ALGORITHM_TAG;
+      tagged.set(rawSignature, 1);
+      return tagged;
+    },
   };
 }
 

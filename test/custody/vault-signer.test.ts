@@ -49,6 +49,33 @@ describe('createVaultCasperClientSigner (B.4 — per-agent delegated signer)', (
     const sigB = await signerB.signEIP712(digest);
     expect(sigA).not.toEqual(sigB);
   });
+
+  it('signEIP712 returns a 65-byte Casper signature (1 algorithm-tag byte + 64 raw) — the shape the facilitator settle requires', async () => {
+    // Regression: previously signEIP712 returned the RAW 64-byte vault signature with no algorithm
+    // tag. The service endpoint accepted it, but the facilitator's on-chain settle rejected it with
+    // "signature must be 65 bytes hex" (reconcile FAILED_TERMINAL). The ExactCasperScheme hex-encodes
+    // this return verbatim, and the library's own signer returns the tagged 65-byte form
+    // (privateKey.signAndAddAlgorithmBytes), so this signer must too.
+    const vault = new EncryptedStoreVault({ masterSecretHex: MASTER_SECRET, store: inMemoryBlobStore() });
+    const { publicKey } = await vault.generateKeypair('agt_shape');
+    const signer = createVaultCasperClientSigner({
+      vault,
+      agentId: 'agt_shape',
+      publicKeyHex: publicKey,
+      accountAddress: 'account-shape',
+    });
+
+    const digest = new TextEncoder().encode('settle me on-chain');
+    const sig = await signer.signEIP712(digest);
+    const raw = await vault.signWith('agt_shape', digest);
+
+    expect(raw.length).toBe(64); // ed25519 raw signature
+    expect(sig.length).toBe(65); // tagged
+    expect(sig[0]).toBe(1); // ed25519 algorithm tag
+    expect(sig.slice(1)).toEqual(raw); // remaining 64 bytes are the raw signature unchanged
+    // hex-encoded (what the facilitator receives) is exactly 130 chars = 65 bytes.
+    expect(Buffer.from(sig).toString('hex')).toHaveLength(130);
+  });
 });
 
 describe('resolveAgentCasperSigner (B.4 — delegated key with custodial PEM fallback)', () => {
