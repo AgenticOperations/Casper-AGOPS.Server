@@ -44,6 +44,9 @@
       "undici@<6.27.0": ">=6.27.0 <7",
       "ws@>=8.0.0 <8.21.0": ">=8.21.0",
       "vite@<6.4.3": ">=6.4.3 <9"
+    },
+    "patchedDependencies": {
+      "casper-js-sdk@5.0.12": "patches/casper-js-sdk@5.0.12.patch"
     }
   },
   "devDependencies": {
