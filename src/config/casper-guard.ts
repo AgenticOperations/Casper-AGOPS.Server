@@ -156,7 +156,13 @@ function buildNetworkSlot(
     signerPemPath ||
     '';
   const tradeAvailable = fields.tradeMcpUrl !== '' && tradePubKey !== '' && tradePemPath !== '';
-  const tradeAlgorithm = fields.tradeSignerPemPath !== '' ? fields.tradeSignerAlgorithm : fields.signerAlgorithm;
+  // A dedicated trade key can be supplied by EITHER path or inline. Use the trade signer's own
+  // algorithm whenever a trade key is present (either way); only fall back to the operator signer's
+  // algorithm when NO trade key was configured and tradePemPath resolved to signerPemPath. Gating on
+  // `tradeSignerPemPath !== ''` alone missed the inline case: an ed25519 inline trade key was parsed
+  // under the operator's secp256k1 algorithm → `Failed to match tag: "octstr" at ["privateKey"]`.
+  const tradeKeyProvided = fields.tradeSignerPemPath !== '' || fields.tradeSignerPemInline !== '';
+  const tradeAlgorithm = tradeKeyProvided ? fields.tradeSignerAlgorithm : fields.signerAlgorithm;
 
   return {
     ...(signer ? { signer } : {}),
