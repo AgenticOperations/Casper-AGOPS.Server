@@ -102,6 +102,8 @@ export interface TreasuryHistoryRow {
   amount: string;
   settlement_timestamp: string;
   recorded_at: string;
+  /** On-chain WCSPR funding tx hash (delegated-key agents); null when there was no on-chain funding. */
+  fund_tx_hash: string | null;
 }
 
 /**
@@ -115,11 +117,12 @@ interface AllocationEventRow {
   amount: string;
   settlement_timestamp: Date;
   recorded_at: Date;
+  fund_tx_hash: string | null;
 }
 
 export async function listTreasuryHistory(pool: pg.Pool, orgId: string, limit = 100): Promise<TreasuryHistoryRow[]> {
   const res = await pool.query<AllocationEventRow>(
-    `SELECT allocation_id, kind, agent_id, amount::text AS amount, settlement_timestamp, recorded_at
+    `SELECT allocation_id, kind, agent_id, amount::text AS amount, settlement_timestamp, recorded_at, fund_tx_hash
        FROM allocation_events
       WHERE org_id = $1 AND account = 'agent-float' AND direction = 'credit' AND kind IN ('depositFor','topup')
       ORDER BY recorded_at DESC
@@ -133,6 +136,7 @@ export async function listTreasuryHistory(pool: pg.Pool, orgId: string, limit = 
     amount: r.amount,
     settlement_timestamp: new Date(r.settlement_timestamp).toISOString(),
     recorded_at: new Date(r.recorded_at).toISOString(),
+    fund_tx_hash: r.fund_tx_hash,
   }));
 }
 
