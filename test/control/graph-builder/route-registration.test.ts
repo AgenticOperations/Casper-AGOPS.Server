@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { buildApp } from '../../../src/app.js';
+import { loadEnv } from '../../../src/config/env.js';
 
 /**
  * Regression guard for a whole CLASS of bug, not just one instance.
@@ -60,4 +62,36 @@ describe('route registration completeness', () => {
 
     expect(unmounted, `route factories never called in app.ts: ${unmounted.join(', ')}`).toEqual([]);
   });
+
+  /**
+   * The end-to-end proof: build the real Fastify instance and confirm the path resolves. Route
+   * registration touches neither Postgres nor Redis, so stub handles are enough — which keeps this
+   * out of the Docker-gated set that skips silently when infra is absent.
+   */
+  it('resolves POST /v1/graph-builder/prompt-to-graph on a real Fastify instance', async () => {
+    const env = loadEnv({
+      ...process.env,
+      DATABASE_URL: 'postgres://stub/stub',
+      REDIS_URL: 'redis://stub:6379',
+      GEMINI_API_KEY: 'test-key',
+    } as NodeJS.ProcessEnv);
+    const app = buildApp({ env, pg: {} as never, redis: {} as never });
+    await app.ready();
+
+    try {
+      expect(app.printRoutes({ commonPrefix: false })).toContain('prompt-to-graph');
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v1/graph-builder/prompt-to-graph',
+        payload: { prompt: 'solo swapper' },
+      });
+
+      // 401 = mounted and auth-guarded. 404 = the original bug (module never registered).
+      expect(res.statusCode).not.toBe(404);
+      expect(res.statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+  }, 30_000);
 });

@@ -12,6 +12,26 @@ import type { AgentFundingDeps } from '../engines/custody/agent-funding.js';
  * The chain name is taken from `CASPER_GUARD_ODRA_CHAIN_NAME`, defaulting to `casper-test`; note that
  * the CEP-18 submitter must sign for the SAME network the RPC points at.
  */
+/**
+ * Resolve the node's chain name via `info_get_status` (`chainspec_name`), e.g. `casper-test` or
+ * `casper`. Returns null on any error so the caller can fall back. This is the authoritative source —
+ * a signed tx whose chain name != the node's is rejected with `-32016 Invalid transaction`.
+ */
+async function resolveChainNameFromNode(rpcUrl: string): Promise<string | null> {
+  try {
+    const res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'info_get_status', params: [] }),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { result?: { chainspec_name?: string } };
+    return body.result?.chainspec_name ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function buildAgentFundingDeps(
   env: Env,
   pemPath: string,
@@ -27,7 +47,12 @@ export async function buildAgentFundingDeps(
   const balancesUref = await resolveWcsprBalancesUref({ rpcUrl, packageHash: wcsprPackageHash });
   if (!balancesUref) return undefined;
 
-  const chainName = env.CASPER_GUARD_ODRA_CHAIN_NAME || 'casper-test';
+  // Chain name MUST match the network the RPC points at, or the node rejects every signed tx with
+  // `-32016 Invalid transaction`. `.env`'s CASPER_GUARD_ODRA_CHAIN_NAME can be stale (e.g. `casper`
+  // while the RPC is testnet), so resolve it from the node itself via `info_get_status`
+  // (`chainspec_name`), falling back to the env value only if the query fails.
+  const chainName =
+    (await resolveChainNameFromNode(rpcUrl)) ?? (env.CASPER_GUARD_ODRA_CHAIN_NAME || 'casper-test');
 
   const tokenSubmitter = createLiveCep18CallSubmitter({
     rpcUrl,
