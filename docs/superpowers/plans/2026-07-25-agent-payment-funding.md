@@ -400,6 +400,12 @@ When `agentAccountHash`/`funding` absent → behavior is byte-for-byte today's p
 
 ---
 
+## Task 8 evidence (2026-07-26, testnet)
+
+- **Funding path PROVEN end-to-end.** Agent `agt_bfc2ef4b395cc9592c491b07ec0e453a` (own account `00cd62a75488ab66e6c90e2d0b943744d56bdc6e628693484d2521e924ab76661f`, derived from delegated pubkey `01785c02…`) funded 4 WCSPR via `fundAgentOnChain`: operator held 96.5 WCSPR (no wrap), purse absent → **dust tx `25215187fffcc71dca70fa87d03ed05056f174568c1ebd6515ab8fa9ec79be28`** (SUCCESS), then **WCSPR transfer tx `5d4ca4fc4b6e126bb2a9c065a7d9312056ad9e701fc7addd26ff7a355258cf38`** (SUCCESS). Both executed on-chain, no `60001`.
+- **Bug found + fixed during Task 8 (commit babc884):** chain-name mismatch. `.env CASPER_GUARD_ODRA_CHAIN_NAME=casper` (mainnet) vs testnet RPC → every signed funding tx rejected `-32016 Invalid transaction` ("Could not provision the float"). Fixed by resolving `chainspec_name` from the node (`info_get_status`).
+- Step 4 (x402 reconcile no-60001) + Step 5 (retire sweep — engine-only, no route) pending live console run.
+
 ## Acceptance criteria
 
 - A newly-funded agent's x402 `reconcile` returns `settled: true, anchored: true` (no `User error: 60001`).
