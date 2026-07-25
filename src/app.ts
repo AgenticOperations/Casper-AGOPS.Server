@@ -10,6 +10,7 @@ import { registerMonitoringRoutes } from './engines/monitoring/routes.js';
 import { registerControlRoutes } from './engines/control/routes.js';
 import { registerTreasuryRoutes } from './engines/control/treasury-routes.js';
 import { registerPolicyRoutes } from './engines/control/policy-routes.js';
+import { registerGraphBuilderRoutes } from './engines/control/graph-builder/routes.js';
 import { registerReportsRoutes } from './engines/reports/routes.js';
 import { registerAuthRoutes } from './engines/identity/account/auth-routes.js';
 import { registerMeRoutes } from './engines/identity/account/me-routes.js';
@@ -160,6 +161,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerTreasuryRoutes(app);
   // E1/Control — Policy read/write surface (A1: GET effective policy; A2/A3 added in later tasks).
   registerPolicyRoutes(app);
+  // Milestone H (visual builder) — prompt -> validated config graph. Proposes config only:
+  // no signer/deploy/vault path. 503s when GEMINI_API_KEY is unset.
+  registerGraphBuilderRoutes(app);
   // E4/Ledger — Group C reports read surface (statements + immutable audit export). Off the hot path; admin-key authed.
   registerReportsRoutes(app);
   // P1 Identity — human self-serve auth (register/login/logout). Sessions are httpOnly cookies.

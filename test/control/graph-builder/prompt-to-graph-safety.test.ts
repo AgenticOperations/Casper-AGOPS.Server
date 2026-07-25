@@ -38,7 +38,7 @@ describe('H.4 promptToGraph static safety check', () => {
     }
   });
 
-  it('imports only the graph schema/validator and the Anthropic SDK type — nothing from casper/custody/identity engines', () => {
+  it('imports only the graph schema/validator — nothing from casper/custody/identity engines', () => {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const modulePath = path.join(
       here,

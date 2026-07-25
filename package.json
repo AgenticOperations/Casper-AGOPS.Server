@@ -28,7 +28,7 @@
     "infra:down": "docker compose down"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.113.0",
+    "@google/genai": "^2.13.0",
     "@make-software/casper-x402": "^1.0.0",
     "@x402/core": "2.15.0",
     "casper-js-sdk": "5.0.12",

@@ -1,85 +1,77 @@
-import type Anthropic from '@anthropic-ai/sdk';
 import { GraphSchema, type Graph } from './graph-schema.js';
 import { validateGraph } from './validate.js';
 
 /**
  * H — LLM prompt -> graph generator (BUILD-CHECKLIST-visual-builder.md Milestone H).
  *
- * SAFETY (H.4, non-negotiable): this module PROPOSES config only. It calls the Claude API
- * with schema-constrained tool-call output so the model can only emit a graph JSON matching
- * Milestone G's schema — never free-form code, and this module never authorizes on-chain
- * broadcast of anything. There is zero reference anywhere in this file to key-custody,
- * delegated-key-grant, or transaction-building machinery; Deploy is a separate, explicit user
- * action (Milestone J, out of scope here). A static grep test (prompt-to-graph-safety.test.ts)
- * enforces this — see that file for the exact forbidden-symbol list.
+ * SAFETY (H.4, non-negotiable): this module PROPOSES config only. It asks Gemini for
+ * JSON-only output and then re-validates that output against Milestone G's Zod schema —
+ * never free-form code, and this module never authorizes on-chain broadcast of anything.
+ * There is zero reference anywhere in this file to key-custody, delegated-key-grant, or
+ * transaction-building machinery; Deploy is a separate, explicit user action (Milestone J,
+ * out of scope here). A static grep test (prompt-to-graph-safety.test.ts) enforces this —
+ * see that file for the exact forbidden-symbol list.
  *
- * H.1: server-side `promptToGraph(prompt)` — tool-call structured output constrained to the
- * graph schema.
+ * H.1: server-side `promptToGraph(prompt)` — JSON-constrained structured output.
  * H.2: generate -> validate -> self-correct loop — one correction pass on validation failure,
  * reusing Milestone G's `validateGraph` (deterministic) kept separate from generation
  * (non-deterministic).
  * H.3: few-shot on the D-5 fleet templates (Data+Risk+Trader, Solo Swapper) so the model
  * anchors on real, valid shapes.
+ *
+ * Why no Gemini `responseSchema`: a node's `config` is a discriminated union keyed on
+ * `node.type`, which Gemini's response schema cannot express. The two encodable alternatives
+ * both lose: a bare `{type: OBJECT}` makes Gemini emit `config: {}` and drop every field, and
+ * an all-optional superset of every type's fields measurably degrades output (the model then
+ * omits required fields such as `allowedActions` and `velocityLimitPerHour`). Both were
+ * measured against this prompt before choosing. So the wire contract is `responseMimeType:
+ * application/json` plus the few-shot shapes below, and `GraphSchema` stays the sole
+ * authority — malformed output fails closed at validation and re-enters the H.2 correction
+ * pass rather than reaching the canvas.
  */
 
-const GRAPH_TOOL_NAME = 'emit_graph';
+/** Minimal structural view of `@google/genai`'s client — kept narrow so tests inject a fake. */
+export interface GraphModelClient {
+  models: {
+    generateContent(request: {
+      model: string;
+      contents: string;
+      config: {
+        systemInstruction: string;
+        responseMimeType: string;
+        temperature: number;
+      };
+    }): Promise<{ text?: string | undefined }>;
+  };
+}
 
-/**
- * The graph schema expressed as JSON Schema for the tool's input_schema. Kept in sync with
- * graph-schema.ts by hand (Zod doesn't have a built-in JSON-Schema exporter wired up here);
- * the emitted graph is still re-validated against the real Zod schema after generation, so an
- * out-of-sync tool schema fails closed at validation rather than silently accepting bad shape.
- */
-const GRAPH_JSON_SCHEMA: Anthropic.Messages.Tool.InputSchema = {
-  type: 'object',
-  properties: {
-    nodes: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          id: { type: 'string' },
-          type: {
-            type: 'string',
-            enum: [
-              'OrgCeiling',
-              'Fleet',
-              'Agent',
-              'Guardrail',
-              'TradingFlow',
-              'DelegatedKeyGrant',
-              'ServiceRail',
-            ],
-          },
-          config: { type: 'object' },
-        },
-        required: ['id', 'type', 'config'],
-      },
-    },
-    edges: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          from: { type: 'string' },
-          to: { type: 'string' },
-          kind: { type: 'string', enum: ['contains', 'governed-by', 'attaches-to'] },
-        },
-        required: ['from', 'to', 'kind'],
-      },
-    },
-  },
-  required: ['nodes', 'edges'],
-};
+export const DEFAULT_GRAPH_MODEL = 'gemini-3.6-flash';
 
 // H.3: few-shot examples anchored on the D-5 fleet templates (data-risk-trader, solo-swapper),
 // expressed as example graphs — not prose descriptions — so the model sees real, valid shapes.
 const FEW_SHOT_SYSTEM_PROMPT = `You translate a natural-language description of an AgentOps trading fleet into a
-validated config graph. You NEVER emit free-form code or prose — you ONLY call the ${GRAPH_TOOL_NAME} tool with a
-graph matching the schema. The graph is a CONFIG SURFACE, not a runtime engine: edges express containment/attachment
+validated config graph. You NEVER emit free-form code, prose, or markdown — you emit ONLY a single JSON object
+matching the schema below. The graph is a CONFIG SURFACE, not a runtime engine: edges express containment/attachment
 ("is governed by / belongs to"), never execution order ("then run").
 
-Node types: OrgCeiling, Fleet, Agent, Guardrail, TradingFlow, DelegatedKeyGrant, ServiceRail.
+The JSON object has exactly two keys:
+  "nodes": [{ "id": string, "type": NodeType, "config": object }]
+  "edges": [{ "from": nodeId, "to": nodeId, "kind": "contains" | "governed-by" | "attaches-to" }]
+
+NodeType is one of: OrgCeiling, Fleet, Agent, Guardrail, TradingFlow, DelegatedKeyGrant, ServiceRail.
+
+Set EXACTLY the config fields belonging to that node's type — no others, and never omit one:
+  OrgCeiling        totalBudget, perAgentMax, cooldownSeconds, allowedDestinations
+  Fleet             name
+  Agent             name, role, allowedActions, serviceScope, subCap, velocityLimitPerHour
+  Guardrail         kind, and optionally slippageBps, allowedPairs, riskLabels
+  TradingFlow       name, version
+  DelegatedKeyGrant agentRef, weight (always 1), status ("pending" | "granted" | "revoked")
+  ServiceRail       resourceId, destination
+
+allowedActions entries and Guardrail "kind" must come from: raw-x402, circle-nano, casper-x402, cspr-trade,
+casper-deploy, evm-transfer.
+
 Every Agent must sit under exactly one Fleet under one OrgCeiling. Agent sub-caps must not exceed the OrgCeiling's
 perAgentMax. A trader Agent (one whose allowedActions includes "cspr-trade") MUST have a cspr-trade Guardrail
 attached via a "governed-by" edge.
@@ -125,45 +117,50 @@ prompt gives CSPR amounts, multiply by 1_000_000_000 (9 decimals) to get motes.`
 
 export interface PromptToGraphInput {
   prompt: string;
+  /** Overrides DEFAULT_GRAPH_MODEL; wired from env.GEMINI_GRAPH_MODEL by the route. */
+  model?: string;
 }
 
 export type PromptToGraphResult = { ok: true; graph: Graph } | { ok: false; error: string };
 
-function extractGraphToolInput(response: Anthropic.Messages.Message): unknown {
-  const toolUse = response.content.find(
-    (block): block is Extract<Anthropic.Messages.ContentBlock, { type: 'tool_use' }> =>
-      block.type === 'tool_use' && block.name === GRAPH_TOOL_NAME,
-  );
-  return toolUse?.input;
+/**
+ * `responseMimeType: application/json` normally yields bare JSON, but a model can still wrap it
+ * in a markdown fence. Strip one if present, then parse. Returns `undefined` on anything
+ * unparseable so the caller treats it as a failed attempt rather than throwing.
+ */
+function parseGraphJson(text: string | undefined): unknown {
+  if (!text) return undefined;
+  const unfenced = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  try {
+    return JSON.parse(unfenced);
+  } catch {
+    return undefined;
+  }
 }
 
 async function generateOnce(
-  client: Anthropic,
-  prompt: string,
+  client: GraphModelClient,
+  input: PromptToGraphInput,
   priorErrors?: string[],
 ): Promise<unknown> {
   const userContent = priorErrors?.length
-    ? `${prompt}\n\nYour previous attempt failed validation with these errors:\n${priorErrors
+    ? `${input.prompt}\n\nYour previous attempt failed validation with these errors:\n${priorErrors
         .map((e) => `- ${e}`)
         .join('\n')}\nProduce a corrected graph that fixes every error.`
-    : prompt;
+    : input.prompt;
 
-  const response = await client.messages.create({
-    model: 'claude-opus-4-8',
-    max_tokens: 4096,
-    system: FEW_SHOT_SYSTEM_PROMPT,
-    tools: [
-      {
-        name: GRAPH_TOOL_NAME,
-        description: 'Emit the AgentOps config graph matching the schema. Config only — never code, never a signature.',
-        input_schema: GRAPH_JSON_SCHEMA,
-      },
-    ],
-    tool_choice: { type: 'tool', name: GRAPH_TOOL_NAME },
-    messages: [{ role: 'user', content: userContent }],
+  const response = await client.models.generateContent({
+    model: input.model ?? DEFAULT_GRAPH_MODEL,
+    contents: userContent,
+    config: {
+      systemInstruction: FEW_SHOT_SYSTEM_PROMPT,
+      responseMimeType: 'application/json',
+      // Deterministic generation: this is config synthesis against a fixed schema, not prose.
+      temperature: 0,
+    },
   });
 
-  return extractGraphToolInput(response);
+  return parseGraphJson(response.text);
 }
 
 /**
@@ -172,16 +169,16 @@ async function generateOnce(
  * "need more info" result rather than ever handing back an invalid graph.
  */
 export async function promptToGraph(
-  client: Anthropic,
+  client: GraphModelClient,
   input: PromptToGraphInput,
 ): Promise<PromptToGraphResult> {
-  const firstAttempt = await generateOnce(client, input.prompt);
+  const firstAttempt = await generateOnce(client, input);
   const firstValidation = validateGraph(firstAttempt);
   if (firstValidation.valid) {
     return { ok: true, graph: GraphSchema.parse(firstAttempt) };
   }
 
-  const secondAttempt = await generateOnce(client, input.prompt, firstValidation.errors);
+  const secondAttempt = await generateOnce(client, input, firstValidation.errors);
   const secondValidation = validateGraph(secondAttempt);
   if (secondValidation.valid) {
     return { ok: true, graph: GraphSchema.parse(secondAttempt) };

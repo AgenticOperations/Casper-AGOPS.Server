@@ -1,14 +1,18 @@
 import { describe, it, expect, vi } from 'vitest';
-import { promptToGraph } from '../../../src/engines/control/graph-builder/prompt-to-graph.js';
+import {
+  promptToGraph,
+  DEFAULT_GRAPH_MODEL,
+  type GraphModelClient,
+} from '../../../src/engines/control/graph-builder/prompt-to-graph.js';
 import type { Graph } from '../../../src/engines/control/graph-builder/graph-schema.js';
 
 /**
- * H.1/H.2/H.3 — server-side promptToGraph(prompt): calls a capable Claude model with
- * schema-constrained structured output (tool-call) so it emits ONLY a graph JSON matching
- * Milestone G's schema; runs the generate -> validate -> self-correct loop (one correction
- * pass on validation failure); few-shots on the FLEET_TEMPLATES shapes.
+ * H.1/H.2/H.3 — server-side promptToGraph(prompt): calls Gemini with JSON-constrained
+ * structured output so it emits ONLY a graph JSON matching Milestone G's schema; runs the
+ * generate -> validate -> self-correct loop (one correction pass on validation failure);
+ * few-shots on the FLEET_TEMPLATES shapes.
  *
- * The Anthropic client is injected (DI) so these tests never hit the network — this also
+ * The Gemini client is injected (DI) so these tests never hit the network — this also
  * proves the endpoint's call surface takes a client dependency rather than constructing its
  * own module-level singleton with a hardcoded key.
  */
@@ -74,27 +78,23 @@ function dataRiskTraderGraph(): Graph {
   };
 }
 
-function mockAnthropicReturning(...graphs: Graph[]) {
+/** Returns each graph in turn as a Gemini JSON response (last one repeats). */
+function mockGeminiReturning(...graphs: Graph[]) {
   let call = 0;
-  const create = vi.fn().mockImplementation(() => {
+  const generateContent = vi.fn().mockImplementation(() => {
     const graph = graphs[Math.min(call, graphs.length - 1)];
     call += 1;
-    return Promise.resolve({
-      content: [
-        {
-          type: 'tool_use',
-          name: 'emit_graph',
-          input: graph,
-        },
-      ],
-    });
+    return Promise.resolve({ text: JSON.stringify(graph) });
   });
-  return { messages: { create } } as unknown as import('@anthropic-ai/sdk').default;
+  return { models: { generateContent } } satisfies GraphModelClient;
 }
+
+const generateContentOf = (client: GraphModelClient) =>
+  client.models.generateContent as unknown as ReturnType<typeof vi.fn>;
 
 describe('H.1 promptToGraph — schema-constrained structured output', () => {
   it('returns a valid graph for a data+risk+trader prompt (H.1 acceptance example)', async () => {
-    const client = mockAnthropicReturning(dataRiskTraderGraph());
+    const client = mockGeminiReturning(dataRiskTraderGraph());
     const result = await promptToGraph(client, {
       prompt:
         'data + risk agent feeding a trader, 100 CSPR cap, trader 60, CSPR/wETH, 1% slippage',
@@ -112,14 +112,47 @@ describe('H.1 promptToGraph — schema-constrained structured output', () => {
     if (org?.type === 'OrgCeiling') expect(org.config.totalBudget).toBe('100000000');
   });
 
-  it('constrains the model to tool-call output only — never asks for free-form code', async () => {
-    const client = mockAnthropicReturning(dataRiskTraderGraph());
+  it('constrains the model to JSON output only — never asks for free-form code', async () => {
+    const client = mockGeminiReturning(dataRiskTraderGraph());
     await promptToGraph(client, { prompt: 'solo swapper, 10 CSPR cap' });
 
-    const callArgs = (client.messages.create as unknown as ReturnType<typeof vi.fn>).mock.calls[0]![0];
-    expect(callArgs.tools).toBeDefined();
-    expect(callArgs.tools[0].name).toBe('emit_graph');
-    expect(callArgs.tool_choice).toEqual({ type: 'tool', name: 'emit_graph' });
+    const callArgs = generateContentOf(client).mock.calls[0]![0];
+    expect(callArgs.config.responseMimeType).toBe('application/json');
+    // Config synthesis against a fixed schema — deterministic, not creative.
+    expect(callArgs.config.temperature).toBe(0);
+    expect(callArgs.config.systemInstruction).toMatch(/ONLY a single JSON object/);
+  });
+
+  it('defaults to a flash-tier model and honours an explicit model override', async () => {
+    const client = mockGeminiReturning(dataRiskTraderGraph());
+
+    await promptToGraph(client, { prompt: 'solo swapper' });
+    expect(generateContentOf(client).mock.calls[0]![0].model).toBe(DEFAULT_GRAPH_MODEL);
+
+    await promptToGraph(client, { prompt: 'solo swapper', model: 'gemini-2.5-pro' });
+    expect(generateContentOf(client).mock.calls[1]![0].model).toBe('gemini-2.5-pro');
+  });
+
+  it('treats unparseable or empty model output as a failed attempt rather than throwing', async () => {
+    const generateContent = vi.fn().mockResolvedValue({ text: undefined });
+    const client = { models: { generateContent } } satisfies GraphModelClient;
+
+    const result = await promptToGraph(client, { prompt: 'anything' });
+
+    expect(result.ok).toBe(false);
+    expect(generateContent).toHaveBeenCalledTimes(2); // still runs the H.2 correction pass
+  });
+
+  it('tolerates a markdown-fenced JSON response', async () => {
+    const graph = dataRiskTraderGraph();
+    const generateContent = vi
+      .fn()
+      .mockResolvedValue({ text: '```json\n' + JSON.stringify(graph) + '\n```' });
+    const client = { models: { generateContent } } satisfies GraphModelClient;
+
+    const result = await promptToGraph(client, { prompt: 'data+risk+trader' });
+
+    expect(result.ok).toBe(true);
   });
 });
 
@@ -131,11 +164,11 @@ describe('H.2 generate -> validate -> self-correct loop', () => {
     badGraph.nodes = badGraph.nodes.filter((n) => n.type !== 'Guardrail');
 
     const goodGraph = dataRiskTraderGraph();
-    const client = mockAnthropicReturning(badGraph, goodGraph);
+    const client = mockGeminiReturning(badGraph, goodGraph);
 
     const result = await promptToGraph(client, { prompt: 'data+risk+trader fleet' });
 
-    expect(client.messages.create).toHaveBeenCalledTimes(2);
+    expect(generateContentOf(client)).toHaveBeenCalledTimes(2);
     expect(result.ok).toBe(true);
     if (result.ok) {
       const hasGuardrail = result.graph.nodes.some((n) => n.type === 'Guardrail');
@@ -148,10 +181,10 @@ describe('H.2 generate -> validate -> self-correct loop', () => {
     badGraph.edges = badGraph.edges.filter((e) => e.kind !== 'governed-by');
     badGraph.nodes = badGraph.nodes.filter((n) => n.type !== 'Guardrail');
 
-    const client = mockAnthropicReturning(badGraph, badGraph);
+    const client = mockGeminiReturning(badGraph, badGraph);
     const result = await promptToGraph(client, { prompt: 'underspecified trading fleet' });
 
-    expect(client.messages.create).toHaveBeenCalledTimes(2);
+    expect(generateContentOf(client)).toHaveBeenCalledTimes(2);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toMatch(/need more info|validation failed|could not produce/i);
@@ -161,11 +194,11 @@ describe('H.2 generate -> validate -> self-correct loop', () => {
 
 describe('H.3 few-shot on FLEET_TEMPLATES', () => {
   it('includes the data-risk-trader and solo-swapper template shapes in the system prompt', async () => {
-    const client = mockAnthropicReturning(dataRiskTraderGraph());
+    const client = mockGeminiReturning(dataRiskTraderGraph());
     await promptToGraph(client, { prompt: 'solo swapper fleet' });
 
-    const callArgs = (client.messages.create as unknown as ReturnType<typeof vi.fn>).mock.calls[0]![0];
-    const system = String(callArgs.system ?? '');
+    const callArgs = generateContentOf(client).mock.calls[0]![0];
+    const system = String(callArgs.config.systemInstruction ?? '');
     expect(system).toMatch(/data-risk-trader/);
     expect(system).toMatch(/solo-swapper/);
   });

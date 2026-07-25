@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DEFAULT_GRAPH_MODEL } from '../engines/control/graph-builder/prompt-to-graph.js';
 
 /**
  * Single source of truth for runtime configuration.
@@ -154,8 +155,9 @@ const EnvSchema = z.object({
   // Milestone H (visual/prompt workflow builder) — prompt -> graph generation only. The LLM here
   // PROPOSES config; this key is never read by any signer/deploy/vault path (see
   // graph-builder/prompt-to-graph.ts header). Empty = the endpoint 503s honestly.
-  ANTHROPIC_API_KEY: z.string().default(''),
-  ANTHROPIC_GRAPH_MODEL: z.string().min(1).default('claude-sonnet-4-5'),
+  // Note: pro-tier Gemini models are quota-0 on free API keys — keep the default on a flash model.
+  GEMINI_API_KEY: z.string().default(''),
+  GEMINI_GRAPH_MODEL: z.string().min(1).default(DEFAULT_GRAPH_MODEL),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
