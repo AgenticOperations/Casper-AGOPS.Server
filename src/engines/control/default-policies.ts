@@ -23,7 +23,7 @@ const CSPR = 1_000_000_000n; // 1 CSPR in motes (9 decimals)
 export async function seedDefaultOrgPolicies(
   pool: pg.Pool,
   redis: Redis,
-  params: { orgId: string; operatorAccountHash: string },
+  params: { orgId: string; operatorAccountHashes: string[] },
 ): Promise<void> {
   const spend: SpendPolicy = {
     spendCap: 100n * CSPR,
@@ -36,7 +36,9 @@ export async function seedDefaultOrgPolicies(
     totalBudget: 1000n * CSPR,
     perAgentMax: 100n * CSPR,
     cooldownSeconds: 0,
-    allowedDestinations: [params.operatorAccountHash],
+    // Both networks' operators are allowed float destinations so an agent funded on either testnet or
+    // mainnet passes the fence (the spend-path recipient is bound separately by the Domain Binding Verifier).
+    allowedDestinations: params.operatorAccountHashes,
   };
 
   const sp = await createPolicyVersion(pool, { orgId: params.orgId, class: 'spend', rules: spend });

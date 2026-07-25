@@ -5,6 +5,7 @@ import { resolveEffectivePolicy } from '../enforcement/policy-epoch-guard.js';
 import { depositFor, type ProvisionDeps } from '../provisioning/deposit.js';
 import { createLiveTransferReader, createStubTransferReader } from '../../lib/casper/transfer-reader.js';
 import { CASPER_NETWORK_HEADER, resolveRequestNetwork } from '../casper-guard/network-header.js';
+import { resolveCasperNetworkSlot } from '../../config/network-slot.js';
 import type { CasperTreasuryClient } from '../../lib/casper/treasury-client.js';
 
 /**
@@ -36,12 +37,12 @@ function selectGateway(
  */
 export function registerTreasuryRoutes(app: FastifyInstance): void {
   app.get('/v1/treasury/balances', async (request, reply) => {
-    const { redis } = app.deps;
+    const { pg: pool, redis } = app.deps;
     const auth = await authForRoute(app, request, 'member');
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
-    const sel = selectGateway(app, request.headers[CASPER_NETWORK_HEADER]);
-    if (!sel.ok) return reply.code(sel.code).send({ error: sel.error });
-    const balances = await getTreasuryBalances({ redis, gateway: sel.gateway }, auth.principal.orgId);
+    const resolved = resolveRequestNetwork(request.headers[CASPER_NETWORK_HEADER]);
+    if (!resolved.ok) return reply.code(400).send({ error: 'invalid_network' });
+    const balances = await getTreasuryBalances({ redis, pool }, auth.principal.orgId, resolved.network);
     return reply.code(200).send(balances);
   });
 
@@ -62,12 +63,14 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
   });
 
   app.post('/v1/treasury/deposit', async (request, reply) => {
-    const { redis } = app.deps;
+    const { pg: pool, redis } = app.deps;
     const auth = await authForRoute(app, request, 'admin');
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
     const sel = selectGateway(app, request.headers[CASPER_NETWORK_HEADER]);
     if (!sel.ok) return reply.code(sel.code).send({ error: sel.error });
     const gateway = sel.gateway;
+    const resolved = resolveRequestNetwork(request.headers[CASPER_NETWORK_HEADER]);
+    if (!resolved.ok) return reply.code(400).send({ error: 'invalid_network' });
     const orgId = auth.principal.orgId;
 
     const body = request.body as { amount?: unknown };
@@ -75,7 +78,7 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
       return reply.code(400).send({ error: 'invalid_amount' });
     }
     await gateway.deposit({ orgId, amount: BigInt(body.amount) });
-    const balances = await getTreasuryBalances({ redis, gateway }, orgId);
+    const balances = await getTreasuryBalances({ redis, pool }, orgId, resolved.network);
     return reply.code(200).send({ available: balances.available, deposited: true });
   });
 
@@ -88,6 +91,9 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
       const sel = selectGateway(app, request.headers[CASPER_NETWORK_HEADER]);
       if (!sel.ok) return reply.code(sel.code).send({ error: sel.error });
       const gateway = sel.gateway;
+      const resolved = resolveRequestNetwork(request.headers[CASPER_NETWORK_HEADER]);
+      if (!resolved.ok) return reply.code(400).send({ error: 'invalid_network' });
+      const slot = resolveCasperNetworkSlot(env, resolved.network);
       const orgId = auth.principal.orgId;
 
       const { id: agentId } = request.params as { id: string };
@@ -102,11 +108,11 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
 
       const { policy } = await resolveEffectivePolicy(pool, redis, { agentId, orgId });
       // Server-side destination derivation: own-agent fence, never client-supplied.
-      // On Casper the destination is the operator account hash. Fall back to env for orgs seeded
-      // before the Casper migration (allowedDestinations may be empty or hold an old EVM address).
+      // On Casper the destination is the operator account hash for the request's network. Fall back to
+      // env for orgs seeded before the Casper migration (allowedDestinations may be empty / an old EVM addr).
       const agentFloatAddress =
         policy.allocation.allowedDestinations[0] ??
-        (env.CASPER_OPERATOR_ACCOUNT_HASH !== '' ? env.CASPER_OPERATOR_ACCOUNT_HASH : undefined);
+        (slot.operatorAccountHash !== '' ? slot.operatorAccountHash : undefined);
       if (!agentFloatAddress) return reply.code(422).send({ error: 'no_float_destination' });
 
       const now = Math.floor(Date.now() / 1000);
@@ -147,7 +153,8 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
     const resolvedNetwork = resolveRequestNetwork(request.headers[CASPER_NETWORK_HEADER]);
     if (!resolvedNetwork.ok) return reply.code(400).send({ error: 'invalid_network' });
 
-    const operatorAccountHash = env.CASPER_OPERATOR_ACCOUNT_HASH;
+    // The deposit address returned to the user MUST be the operator for the selected network.
+    const operatorAccountHash = resolveCasperNetworkSlot(env, resolvedNetwork.network).operatorAccountHash;
     if (!operatorAccountHash) {
       return reply.code(503).send({ error: 'operator_wallet_not_configured' });
     }
@@ -234,14 +241,15 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
       return reply.code(410).send({ error: 'intent_expired' });
     }
 
-    const operatorAccountHash = env.CASPER_OPERATOR_ACCOUNT_HASH;
+    const slot = resolveCasperNetworkSlot(env, resolvedNetwork.network);
+    const operatorAccountHash = slot.operatorAccountHash;
     if (!operatorAccountHash) {
       return reply.code(503).send({ error: 'operator_wallet_not_configured' });
     }
 
     const transferReader =
-      env.CASPER_GUARD_FACILITATOR_RPC_URL !== ''
-        ? createLiveTransferReader({ rpcUrl: env.CASPER_GUARD_FACILITATOR_RPC_URL })
+      slot.facilitatorRpcUrl !== ''
+        ? createLiveTransferReader({ rpcUrl: slot.facilitatorRpcUrl })
         : createStubTransferReader();
 
     const match = await transferReader.findTransferByRefId({
@@ -288,7 +296,7 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
 
     // Refresh balances in Redis via getTreasuryBalances (warms cache).
     try {
-      await getTreasuryBalances({ redis, gateway }, orgId);
+      await getTreasuryBalances({ redis, pool }, orgId, resolvedNetwork.network);
     } catch {
       // non-fatal — balance will refresh on next read
     }
@@ -315,7 +323,9 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
     const sel = selectGateway(app, request.headers[CASPER_NETWORK_HEADER]);
     if (!sel.ok) return reply.code(sel.code).send({ error: sel.error });
-    const gateway = sel.gateway;
+    const resolved = resolveRequestNetwork(request.headers[CASPER_NETWORK_HEADER]);
+    if (!resolved.ok) return reply.code(400).send({ error: 'invalid_network' });
+    const network = resolved.network;
 
     const body = request.body as { deploy_hash?: unknown; amount?: unknown; amount_motes?: unknown };
     if (typeof body?.deploy_hash !== 'string' || !/^[0-9a-fA-F]{64}$/.test(body.deploy_hash)) {
@@ -339,11 +349,14 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
       });
     }
 
-    // Verify on-chain: fetch the deploy and confirm it transferred to the operator account.
-    const rpcUrl = env.CASPER_GUARD_FACILITATOR_RPC_URL;
+    // Verify on-chain: fetch the deploy and confirm it transferred to the operator account. Read the
+    // RPC + operator from the slot for THIS request's network so a mainnet deposit is verified against
+    // the mainnet node/operator and a testnet deposit against testnet.
+    const slot = resolveCasperNetworkSlot(env, network);
+    const rpcUrl = slot.facilitatorRpcUrl;
     if (!rpcUrl) return reply.code(503).send({ error: 'rpc_not_configured' });
 
-    const operatorAccountHash = env.CASPER_OPERATOR_ACCOUNT_HASH;
+    const operatorAccountHash = slot.operatorAccountHash;
     if (!operatorAccountHash) return reply.code(503).send({ error: 'operator_wallet_not_configured' });
 
     // Try info_get_transaction first (Casper 2.0 native transactions), then fall back to
@@ -444,43 +457,42 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
       return reply.code(400).send({ error: 'invalid_amount' });
     }
 
-    // Credit treasury and record with this deploy_hash for idempotency.
-    // Use a transaction + FOR UPDATE on a pseudo-row to prevent concurrent double-credit.
-    await pool.query('BEGIN');
-    try {
-      // Insert an intent row using the deploy_hash as the idempotency key.
-      // If a row for this deploy_hash already exists (race), the INSERT will fail and we rollback.
-      const insertRes = await pool.query<{ id: string }>(
-        `INSERT INTO treasury_deposit_intents
-           (org_id, ref_id, expected_amount, status, deploy_hash, credited_amount, credited_at)
-         VALUES ($1, $2, $3, 'credited', $4, $5, now())
-         ON CONFLICT DO NOTHING
-         RETURNING id`,
-        [
-          orgId,
-          // ref_id is unique bigint — use a hash of the deploy_hash to avoid collisions.
-          BigInt('0x' + deployHash.slice(0, 15)).toString(),
-          rawAmount.toString(),
-          deployHash,
-          rawAmount.toString(),
-        ],
-      );
+    // Record the deposit, keyed on deploy_hash for idempotency. There is NOTHING to "credit" on-chain
+    // here: the user already sent CSPR to the shared operator wallet, and we verified that transfer above.
+    // This row IS the org's balance — getTreasuryBalances sums credited_amount per org+network from this
+    // ledger (the operator wallet pools every org's deposits, so its raw on-chain balance is a cross-tenant
+    // total and must never be shown as one org's balance). So this route only writes the ledger row — it
+    // must NOT submit any transfer. (An earlier version called gateway.deposit(), which submits a fresh
+    // operator→operator transfer; the node rejected it with RPC -32016 and the whole request 500'd.)
+    //
+    // The partial-unique index on deploy_hash makes the INSERT itself the concurrency guard: a racing
+    // duplicate returns no row (ON CONFLICT DO NOTHING) and we report already_credited. Single statement,
+    // so no explicit BEGIN/COMMIT is needed (and pool.query('BEGIN') on a Pool is unsafe anyway — each
+    // statement can land on a different pooled connection).
+    const insertRes = await pool.query<{ id: string }>(
+      `INSERT INTO treasury_deposit_intents
+         (org_id, ref_id, expected_amount, status, deploy_hash, credited_amount, credited_at, network)
+       VALUES ($1, $2, $3, 'credited', $4, $5, now(), $6)
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [
+        orgId,
+        // ref_id is unique bigint — derive it from the deploy_hash (60-bit slice fits signed bigint).
+        BigInt('0x' + deployHash.slice(0, 15)).toString(),
+        rawAmount.toString(),
+        deployHash,
+        rawAmount.toString(),
+        network,
+      ],
+    );
 
-      if (!insertRes.rows[0]) {
-        // Another concurrent request already credited this deploy.
-        await pool.query('ROLLBACK');
-        return reply.code(200).send({ credited: true, already_credited: true, credited_amount: rawAmount.toString() });
-      }
-
-      await gateway.deposit({ orgId, amount: rawAmount });
-      await pool.query('COMMIT');
-    } catch (err) {
-      await pool.query('ROLLBACK');
-      throw err;
+    if (!insertRes.rows[0]) {
+      // Another concurrent request already credited this deploy.
+      return reply.code(200).send({ credited: true, already_credited: true, credited_amount: rawAmount.toString() });
     }
 
     try {
-      await getTreasuryBalances({ redis, gateway }, orgId);
+      await getTreasuryBalances({ redis, pool }, orgId, network);
     } catch { /* non-fatal */ }
 
     return reply.code(200).send({

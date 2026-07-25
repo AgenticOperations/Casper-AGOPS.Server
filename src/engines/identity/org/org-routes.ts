@@ -74,13 +74,14 @@ export function registerOrgRoutes(app: FastifyInstance): void {
     // downstream policy/provision/authorize for this org's agents fails closed at the compiler.
     // Use Casper operator account hash as the float destination fence. Falls back to the legacy EVM
     // agent-float address if the Casper hash is not configured, so the Arc rail still works.
-    const floatDestination =
-      env.CASPER_OPERATOR_ACCOUNT_HASH !== ''
-        ? env.CASPER_OPERATOR_ACCOUNT_HASH
-        : env.AGENT_FLOAT_PRIVATE_KEY;
+    // Allow BOTH networks' operators as float destinations so agents funded on testnet or mainnet
+    // pass the fence. Fall back to the legacy EVM agent-float address if no Casper operator is set.
+    const floatDestinations = [env.CASPER_OPERATOR_ACCOUNT_HASH, env.CASPER_MAINNET_OPERATOR_ACCOUNT_HASH]
+      .filter((h) => h !== '');
+    const operatorAccountHashes = floatDestinations.length > 0 ? floatDestinations : [env.AGENT_FLOAT_PRIVATE_KEY];
     await seedDefaultOrgPolicies(pool, redis, {
       orgId,
-      operatorAccountHash: floatDestination,
+      operatorAccountHashes,
     });
 
     return reply
@@ -95,14 +96,13 @@ export function registerOrgRoutes(app: FastifyInstance): void {
     const auth = await authForRoute(app, request, 'admin');
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
 
-    const floatDestination =
-      env.CASPER_OPERATOR_ACCOUNT_HASH !== ''
-        ? env.CASPER_OPERATOR_ACCOUNT_HASH
-        : env.AGENT_FLOAT_PRIVATE_KEY;
+    const floatDestinations = [env.CASPER_OPERATOR_ACCOUNT_HASH, env.CASPER_MAINNET_OPERATOR_ACCOUNT_HASH]
+      .filter((h) => h !== '');
+    const operatorAccountHashes = floatDestinations.length > 0 ? floatDestinations : [env.AGENT_FLOAT_PRIVATE_KEY];
     await seedDefaultOrgPolicies(pool, redis, {
       orgId: auth.principal.orgId,
-      operatorAccountHash: floatDestination,
+      operatorAccountHashes,
     });
-    return reply.code(200).send({ reseeded: true, destination: floatDestination });
+    return reply.code(200).send({ reseeded: true, destinations: operatorAccountHashes });
   });
 }
