@@ -214,16 +214,16 @@ git commit -m "feat(casper): live operator-signed CEP-18 call submitter (typed C
 - Create: `src/engines/custody/agent-funding.ts`
 - Test: `test/custody/agent-funding.test.ts`
 
-- [ ] **Step 1: Write failing tests** (all with injected fakes for the token submitter, native-transfer submitter, and readers):
+- [x] **Step 1: Write failing tests** (all with injected fakes for the token submitter, native-transfer submitter, and readers):
   1. Happy path, operator already has WCSPR, agent purse exists → only `transfer` called; returns `{ transferTxHash }`.
   2. Operator WCSPR short → `deposit` (wrap) called for the shortfall first, then `transfer`.
   3. Agent purse absent → native dust transfer called before `transfer`.
   4. Idempotent: purse exists + operator funded → dust and wrap NOT called.
   5. `transfer` throws → error propagates (caller compensates); no partial success swallowed.
 
-- [ ] **Step 2: Run tests → FAIL.**
+- [x] **Step 2: Run tests → FAIL.**
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```typescript
 export interface AgentFundingDeps {
@@ -274,11 +274,13 @@ export async function fundAgentOnChain(deps: AgentFundingDeps, input: { agentAcc
 }
 ```
 
-- [ ] **Step 4: Run tests → PASS.**
+- [x] **Step 4: Run tests → PASS.**
 
-- [ ] **Step 5: Confirm dust amount** — from the Task 2 manual run, record the minimum native CSPR that reliably creates a purse on testnet; set `dustMotes` default accordingly. Note it here in the plan.
+- [x] **Step 5: Confirm dust amount** — from the Task 2 manual run, record the minimum native CSPR that reliably creates a purse on testnet; set `dustMotes` default accordingly. Note it here in the plan.
 
-- [ ] **Step 6: Commit** `feat(custody): fundAgentOnChain idempotent wrap/dust/transfer orchestration`.
+
+  **DUST NOTE (2026-07-25):** default `dustMotes = 2500000000` (2.5 CSPR). CEP-18 `transfer` to an account-hash Key succeeds even for an account with no native main purse (balances live in the WCSPR contract dictionary — confirmed in Task 2, where `transfer` to `1885b99…` populated its balance with no prior purse). Dust is therefore a safety step to ensure the agent's main purse exists; 2.5 CSPR reliably creates a purse via native transfer on testnet. Sweep gas is paid by the OPERATOR (operator submits the vault-signed authorization), so the agent purse does not need to fund gas.
+- [x] **Step 6: Commit** `feat(custody): fundAgentOnChain idempotent wrap/dust/transfer orchestration`.
 
 ---
 
