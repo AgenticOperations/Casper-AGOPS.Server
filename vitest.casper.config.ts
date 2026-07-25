@@ -25,6 +25,8 @@ export default defineConfig({
       'test/control/attach-trading-flow.test.ts',
       'test/control/trading-flow.test.ts',
       'test/control/treasury-network.test.ts',
+      'test/control/treasury-route-agent-funding.test.ts',
+      'test/provisioning/deposit-onchain-funding.test.ts',
       'test/reports/ledger-reports.test.ts',
       'test/custody/**/*.test.ts',
       'test/identity/**/*.test.ts',

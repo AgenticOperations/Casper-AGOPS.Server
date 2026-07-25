@@ -27,6 +27,7 @@ import { EncryptedStoreVault } from './engines/custody/key-vault.js';
 import { createPgVaultBlobStore } from './engines/custody/pg-vault-blob-store.js';
 import { sweepPendingConfirmations } from './engines/provisioning/confirm-sweep.js';
 import { startConfirmationWorker } from './engines/provisioning/confirm-worker.js';
+import { buildAgentFundingDeps } from './config/agent-funding.js';
 
 /** Background sweep cadence; provides the natural "awaiting finality" window (MVP stub always-final). */
 const CONFIRM_WORKER_INTERVAL_MS = 2000;
@@ -91,6 +92,18 @@ async function main(): Promise<void> {
         })
       : undefined;
 
+  // JIT on-chain agent funding (testnet slot). Undefined when not fully configured → treasury float
+  // provisioning runs today's path verbatim. Resolves the WCSPR balances uref at boot (one RPC).
+  let agentFunding;
+  try {
+    agentFunding = await buildAgentFundingDeps(env, testnetPemPath);
+  } catch (err) {
+    // Never block boot on funding wiring — fall back to the current float path.
+    // eslint-disable-next-line no-console
+    console.warn('agent funding deps unavailable, float funding disabled:', err);
+    agentFunding = undefined;
+  }
+
   const app = buildApp({
     env,
     pg: pgPool,
@@ -98,6 +111,7 @@ async function main(): Promise<void> {
     gateway,
     gatewayByNetwork,
     ...(vault ? { vault } : {}),
+    ...(agentFunding ? { agentFunding } : {}),
     casperGuard: buildCasperGuardDeps(env, { pool: pgPool, ...(vault ? { vault } : {}) }),
   });
 

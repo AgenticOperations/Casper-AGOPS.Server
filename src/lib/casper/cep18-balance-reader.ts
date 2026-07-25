@@ -62,6 +62,45 @@ async function rpc(
   return (await res.json()) as { result?: unknown; error?: unknown };
 }
 
+/**
+ * Resolve the WCSPR `balances` dictionary seed uref from the contract package. Queries the latest
+ * contract version's named keys via `query_global_state` (hash-prefixed key, Casper 2.0 legacy
+ * Contract storage). Returns null if it cannot be resolved (funding then stays unconfigured).
+ */
+export async function resolveWcsprBalancesUref(input: {
+  rpcUrl: string;
+  packageHash: string;
+  fetchFn?: FetchLike;
+}): Promise<string | null> {
+  const fetchFn = input.fetchFn ?? (globalThis.fetch as unknown as FetchLike);
+  const pkg = await rpc(fetchFn, input.rpcUrl, 'query_global_state', {
+    state_identifier: null,
+    key: `hash-${input.packageHash}`,
+    path: [],
+  });
+  const versions = (
+    pkg.result as
+      | { stored_value?: { ContractPackage?: { versions?: { contract_hash: string }[] } } }
+      | undefined
+  )?.stored_value?.ContractPackage?.versions;
+  const latestVersion = versions?.[versions.length - 1];
+  if (!latestVersion) return null;
+  const contractHex = latestVersion.contract_hash.replace(/^contract-/, ''); // "contract-<hex>" → hex
+
+  const contract = await rpc(fetchFn, input.rpcUrl, 'query_global_state', {
+    state_identifier: null,
+    key: `hash-${contractHex}`,
+    path: [],
+  });
+  const namedKeys = (
+    contract.result as
+      | { stored_value?: { Contract?: { named_keys?: { name: string; key: string }[] } } }
+      | undefined
+  )?.stored_value?.Contract?.named_keys;
+  const balances = namedKeys?.find((n) => n.name === 'balances');
+  return balances?.key ?? null;
+}
+
 export function createOnChainReaders(cfg: OnChainReadersConfig): OnChainReaders {
   const fetchFn = cfg.fetchFn ?? (globalThis.fetch as unknown as FetchLike);
 

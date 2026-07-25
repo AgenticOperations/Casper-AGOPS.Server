@@ -3,6 +3,9 @@ import { authForRoute } from '../identity/access/route-guard.js';
 import { getTreasuryBalances, listAgentsWithFloats, listTreasuryHistory, secondsSinceLastAllocation } from './treasury-read.js';
 import { resolveEffectivePolicy } from '../enforcement/policy-epoch-guard.js';
 import { depositFor, type ProvisionDeps } from '../provisioning/deposit.js';
+import { readActiveDelegatedKey } from '../identity/delegation/delegated-keys-store.js';
+import { deriveCasperAccountAddress } from '../custody/vault-signer.js';
+import { resolveAgentFundingPlan } from './agent-funding-plan.js';
 import { createLiveTransferReader, createStubTransferReader } from '../../lib/casper/transfer-reader.js';
 import { CASPER_NETWORK_HEADER, resolveRequestNetwork } from '../casper-guard/network-header.js';
 import { resolveCasperNetworkSlot } from '../../config/network-slot.js';
@@ -107,13 +110,29 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
       }
 
       const { policy } = await resolveEffectivePolicy(pool, redis, { agentId, orgId });
-      // Server-side destination derivation: own-agent fence, never client-supplied.
-      // On Casper the destination is the operator account hash for the request's network. Fall back to
-      // env for orgs seeded before the Casper migration (allowedDestinations may be empty / an old EVM addr).
-      const agentFloatAddress =
-        policy.allocation.allowedDestinations[0] ??
-        (slot.operatorAccountHash !== '' ? slot.operatorAccountHash : undefined);
-      if (!agentFloatAddress) return reply.code(422).send({ error: 'no_float_destination' });
+
+      // JIT on-chain funding gating. Derive the agent's OWN account from its ACTIVE delegated key
+      // (SERVER-derived, never client-supplied) ONLY when funding is fully configured — this also
+      // avoids loading casper-js-sdk (deriveCasperAccountAddress) in the unconfigured harness.
+      const funding = app.deps.agentFunding;
+      const fundingConfigured =
+        funding !== undefined &&
+        env.DEMO_CSPR_TOKEN_PACKAGE_HASH !== '' &&
+        slot.operatorAccountHash !== '';
+      let agentOwnAccount: string | undefined;
+      if (fundingConfigured) {
+        const active = await readActiveDelegatedKey(pool, { agentId });
+        if (active) agentOwnAccount = await deriveCasperAccountAddress(active.publicKey);
+      }
+
+      const plan = resolveAgentFundingPlan({
+        allocationPolicy: policy.allocation,
+        agentOwnAccount,
+        operatorAccountHash: slot.operatorAccountHash,
+        wcsprPackageHash: env.DEMO_CSPR_TOKEN_PACKAGE_HASH,
+        funding,
+      });
+      if (!plan.agentFloatAddress) return reply.code(422).send({ error: 'no_float_destination' });
 
       const now = Math.floor(Date.now() / 1000);
       const gap = await secondsSinceLastAllocation(pool, agentId, now);
@@ -121,15 +140,22 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
       const result = await depositFor(deps, {
         orgId,
         agentId,
-        agentFloatAddress,
+        agentFloatAddress: plan.agentFloatAddress,
         amount: BigInt(body.amount),
-        policy: policy.allocation,
+        policy: plan.effectivePolicy,
         kind,
         secondsSinceLastAllocation: gap,
         now,
+        agentAccountHash: plan.agentAccountHash,
+        funding: plan.funding,
       });
       if (result.outcome === 'DENY') {
         return reply.code(200).send({ outcome: 'deny', reason: result.reason });
+      }
+      if (result.outcome === 'FUNDING_FAILED') {
+        // On-chain funding failed AFTER a passing reserve (reserve already compensated in depositFor).
+        // Distinct from a policy DENY — surface as a non-2xx so callers don't treat it as submitted.
+        return reply.code(502).send({ error: 'agent_funding_failed', reason: result.reason });
       }
       // result.outcome === 'SUBMITTED'
       return reply.code(200).send({ outcome: 'submitted', allocation_id: result.allocationId, state: 'pending' });

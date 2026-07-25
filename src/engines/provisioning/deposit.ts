@@ -52,14 +52,16 @@ export interface DepositForParams {
    * ABSENT → today's float path runs byte-for-byte (additive fence). NOT the native-rail destination —
    * `agentFloatAddress` stays the operator (Review fix #1: no native double-send).
    */
-  agentAccountHash?: string;
+  agentAccountHash?: string | undefined;
   /** Injected on-chain funding deps; present only when funding is fully configured. */
-  funding?: AgentFundingDeps;
+  funding?: AgentFundingDeps | undefined;
   /** Injected funding fn (defaults to the real orchestrator); overridable for tests. */
-  fundAgentOnChain?: (
-    deps: AgentFundingDeps,
-    input: { agentAccountHash: string; amountMotes: string },
-  ) => Promise<FundAgentResult>;
+  fundAgentOnChain?:
+    | ((
+        deps: AgentFundingDeps,
+        input: { agentAccountHash: string; amountMotes: string },
+      ) => Promise<FundAgentResult>)
+    | undefined;
 }
 
 export type DepositResult =

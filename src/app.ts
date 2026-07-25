@@ -5,6 +5,7 @@ import type { Env } from './config/env.js';
 import { pingPg } from './db/client.js';
 import { pingRedis } from './redis/client.js';
 import type { CasperTreasuryClient } from './lib/casper/treasury-client.js';
+import type { AgentFundingDeps } from './engines/custody/agent-funding.js';
 import { registerMonitoringRoutes } from './engines/monitoring/routes.js';
 import { registerControlRoutes } from './engines/control/routes.js';
 import { registerTreasuryRoutes } from './engines/control/treasury-routes.js';
@@ -77,6 +78,12 @@ export interface AppDeps {
   associatedKeyRevokeVerifier?: AssociatedKeyRevokeVerifier;
   /** Optional log destination; tests inject a capturing stream to assert redaction. */
   logStream?: { write(msg: string): void };
+  /**
+   * JIT on-chain agent-funding deps (WCSPR mirror of the reserved float into the agent's own account).
+   * Present only when fully configured (WCSPR pkg + operator + RPC), wired in server.ts. Absent in the
+   * unit/HTTP harness → float provisioning runs today's path verbatim (additive fence).
+   */
+  agentFunding?: AgentFundingDeps;
 }
 
 /**

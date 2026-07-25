@@ -328,7 +328,7 @@ When `agentAccountHash`/`funding` absent → behavior is byte-for-byte today's p
 - Modify: `src/config/casper-guard.ts` and/or `src/app.ts` (build + inject `AgentFundingDeps`, WCSPR package hash from env)
 - Test: `test/control/treasury-route-agent-funding.test.ts`
 
-- [ ] **Step 1: Write failing tests:**
+- [x] **Step 1: Write failing tests:**
   1. Agent WITH active delegated key → the NATIVE `depositFor` destination stays the OPERATOR (fix #1), `agentAccountHash` = `deriveCasperAccountAddress(delegatedPublicKey)` is passed separately, and `funding` deps are passed to `depositFor`.
   2. Agent WITHOUT delegated key → no `agentAccountHash`/`funding` passed; behavior is today's path verbatim.
   3. Endpoint response shape unchanged for existing callers (still `{ outcome, allocation_id, state }`); a `FUNDING_FAILED` outcome maps to a distinct non-2xx (e.g. 502) without altering the SUBMITTED/deny shapes.
@@ -336,9 +336,9 @@ When `agentAccountHash`/`funding` absent → behavior is byte-for-byte today's p
   5. Guards: when `env.DEMO_CSPR_TOKEN_PACKAGE_HASH === ''` OR `slot.operatorAccountHash === ''`, funding is skipped and the current path runs (additive fence holds in the unconfigured test harness).
   6. **Double-send regression (reviewer-recommended):** on a full float for a delegated-key agent, the NATIVE transfer submitter is called with `toAccountHash === operator` (NOT the agent), exactly ONCE; the agent account receives only dust (native) + WCSPR. This test locks in fix #1.
 
-- [ ] **Step 2: Run tests → FAIL.**
+- [x] **Step 2: Run tests → FAIL.**
 
-- [ ] **Step 3: Implement** — in `provisionHandler`:
+- [x] **Step 3: Implement** — in `provisionHandler`:
   1. Look up the active delegated key: `const active = await readActiveDelegatedKey(pool, { agentId });` (returns `{ publicKey } | null`).
   2. Compute `const agentOwnAccount = active ? await deriveCasperAccountAddress(active.publicKey) : undefined;`
   3. **Keep `agentFloatAddress` EXACTLY as today** (`policy.allocation.allowedDestinations[0] ?? slot.operatorAccountHash`) — this is the native rail destination; do NOT change it (fix #1).
@@ -347,9 +347,9 @@ When `agentAccountHash`/`funding` absent → behavior is byte-for-byte today's p
   6. **Fund only when fully configured:** pass `agentAccountHash = agentOwnAccount` and `funding` to `depositFor` ONLY when `agentOwnAccount && env.DEMO_CSPR_TOKEN_PACKAGE_HASH !== '' && slot.operatorAccountHash !== ''`. Otherwise omit both → today's behavior verbatim.
   7. Map a `FUNDING_FAILED` DepositResult to a `502`/`{ error: 'agent_funding_failed', reason }` reply; leave SUBMITTED/deny replies unchanged.
 
-- [ ] **Step 4: Run tests → PASS. Run `pnpm vitest run test/control/` and `test/config/`** to prove no regression.
+- [x] **Step 4: Run tests → PASS. Run `pnpm vitest run test/control/` and `test/config/`** to prove no regression.
 
-- [ ] **Step 5: Commit** `feat(treasury): fund agent's own account on assign-float when delegated key present`.
+- [x] **Step 5: Commit** `feat(treasury): fund agent's own account on assign-float when delegated key present`.
 
 ---
 
