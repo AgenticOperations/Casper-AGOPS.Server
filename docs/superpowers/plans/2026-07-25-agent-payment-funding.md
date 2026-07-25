@@ -391,7 +391,7 @@ When `agentAccountHash`/`funding` absent → behavior is byte-for-byte today's p
 
 ### Task 8: Full-path proof on testnet
 
-- [ ] **Step 1** — Build: `pnpm build`. Full suite: `pnpm vitest run`. Expected: all pass.
+- [x] **Step 1** — Build: `pnpm build` PASSES (after activating the casper-js-sdk patch via `patchedDependencies`). Fast suite `vitest run --config vitest.casper.config.ts`: 96 files, 257 pass, 0 fail (215 Docker-gated skips). Compiled dist loads under plain Node ESM (named exports intact).
 - [ ] **Step 2** — Deploy the branch (or run the compiled server locally against testnet) and, via the console UI, click **assign float** on a fresh agent that has an active delegated key. Confirm in the DB/logs that an allocation was reserved.
 - [ ] **Step 3** — Query cspr.cloud for that agent's account: confirm `main_purse_uref` is now set and WCSPR balance equals the assigned amount.
 - [ ] **Step 4** — Drive an x402 payment for that agent (`authorize_payment` → call service → `reconcile`). Expected: `reconcile` returns `settled: true, anchored: true` — NOT `60001`.
