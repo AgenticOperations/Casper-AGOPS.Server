@@ -173,6 +173,7 @@ function buildNetworkSlot(
               senderPublicKey: tradePubKey || undefined,
               pemPath: tradePemPath || undefined,
               algorithm: tradeAlgorithm,
+              rpcUrl: fields.facilitatorRpcUrl || undefined,
             });
             const csprTradeReader = createCsprTradeSettlementReader(tradeClient, deployReader);
             // When the hosted facilitator URL is configured, use it to submit transfer_from on-chain.
@@ -218,6 +219,7 @@ function buildNetworkSlot(
         senderPublicKey: tradePubKey || undefined,
         pemPath: tradePemPath || undefined,
         algorithm: tradeAlgorithm,
+        rpcUrl: fields.facilitatorRpcUrl || undefined,
       });
       const executor = createCsprTradeExecutor({
         policy: {

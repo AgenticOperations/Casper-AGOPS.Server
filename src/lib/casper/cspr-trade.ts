@@ -250,6 +250,19 @@ type McpSwapBuildResult = {
 };
 
 /**
+ * Pull a hash string out of account_put_transaction's `transaction_hash` result, which for a Casper
+ * 2.0 V1 transaction is `{ Version1: "<hex>" }` (and `{ Deploy: "<hex>" }` for a legacy deploy).
+ */
+function extractTransactionHash(hash: unknown): string | undefined {
+  if (typeof hash === 'string') return hash;
+  if (hash && typeof hash === 'object') {
+    const v = (hash as Record<string, unknown>).Version1 ?? (hash as Record<string, unknown>).Deploy;
+    if (typeof v === 'string') return v;
+  }
+  return undefined;
+}
+
+/**
  * Resolve build_swap's response into the unsigned transaction/deploy JSON string. Some MCP server
  * versions wrap it in a `deploy_json`/`deploy` field; the current live CSPR.trade MCP (confirmed
  * 2026-07-23) instead returns the raw Transaction V1 object directly at the top level (a `hash` +
@@ -264,11 +277,6 @@ export function resolveUnsignedTransactionJson(buildResult: McpSwapBuildResult):
   }
   return undefined;
 }
-
-type McpSubmitResult = {
-  deploy_hash?: string;
-  transaction_hash?: string;
-};
 
 /**
  * Live CSPR.trade MCP client — the real production / hackathon demo path.
@@ -288,31 +296,32 @@ export class LiveCsprTradeClient implements CsprTradeClient {
   private readonly senderPublicKey: string;
   private readonly pemPath: string;
   private readonly algorithm: CasperKeyAlgorithmName;
+  private readonly rpcUrl: string;
 
   constructor(cfg: {
     mcpUrl: string;
     senderPublicKey: string;
     pemPath: string;
     algorithm: CasperKeyAlgorithmName;
+    /** Casper node RPC for the request's network — used to submit the signed swap directly via
+     *  account_put_transaction (team directive: do NOT broadcast through cspr.trade's submit_transaction). */
+    rpcUrl: string;
   }) {
     this.mcpUrl = cfg.mcpUrl;
     this.senderPublicKey = cfg.senderPublicKey;
     this.pemPath = cfg.pemPath;
     this.algorithm = cfg.algorithm;
+    this.rpcUrl = cfg.rpcUrl;
   }
 
   async quote(intent: CsprTradeIntent): Promise<CsprTradeQuote> {
-    // Pair format: "CSPR/sCSPR" → tokenIn = "CSPR", tokenOut = "sCSPR"
-    // Valid tokens on Casper testnet: CSPR, sCSPR. USDT/USDC do NOT exist — reject early.
+    // Pair format: "TOKEN_IN/TOKEN_OUT", e.g. "CSPR/sCSPR". We do NOT hardcode a token allowlist:
+    // cspr.trade's supported tokens/pairs are network-specific and discovered at runtime (get_tokens/
+    // get_pairs), and differ between testnet and mainnet. An unsupported pair is surfaced by get_quote
+    // itself (a quote error), which is the authoritative source — not a stale local list.
     const [tokenIn, tokenOut] = intent.pair.split('/').map((s) => s.trim());
     if (!tokenIn || !tokenOut) {
-      throw new Error(`cspr_trade_invalid_pair: expected "TOKEN_A/TOKEN_B", got "${intent.pair}"`);
-    }
-    const KNOWN_INVALID = ['USDT', 'USDC', 'DAI', 'ETH', 'BTC'];
-    for (const t of [tokenIn, tokenOut]) {
-      if (KNOWN_INVALID.includes(t.toUpperCase())) {
-        throw new Error(`cspr_trade_invalid_token: "${t}" does not exist on Casper testnet. Valid tokens: CSPR, sCSPR.`);
-      }
+      throw new Error(`cspr_trade_invalid_pair: expected "TOKEN_IN/TOKEN_OUT", got "${intent.pair}"`);
     }
 
     // Fetch real AMM quote. estimate_slippage returns plain-text on this MCP server, so call
@@ -398,16 +407,51 @@ export class LiveCsprTradeClient implements CsprTradeClient {
     // Step 2: Sign the unsigned deploy JSON locally using casper-js-sdk.
     const signedDeployJson = await this.signDeployJson(unsignedDeployJson);
 
-    // Step 3: Submit signed deploy to mcp.cspr.trade → real on-chain testnet tx hash.
-    const submitResult = await mcpCall<McpSubmitResult>(this.mcpUrl, 'submit_transaction', {
-      signed_deploy_json: signedDeployJson,
-    });
-
-    const txHash = submitResult.deploy_hash ?? submitResult.transaction_hash;
-    if (!txHash) {
-      throw new Error('cspr_trade_submit_error: no deploy_hash returned by submit_transaction');
-    }
+    // Step 3: Submit the signed transaction DIRECTLY to the Casper node via account_put_transaction
+    // (team directive: do NOT broadcast through cspr.trade's submit_transaction MCP tool). Submitting
+    // ourselves keeps the network node under our control (the per-network slot RPC), so a mainnet swap
+    // is submitted to the mainnet node and testnet to testnet — never mis-routed by the MCP proxy.
+    const txHash = await this.submitSignedTransaction(signedDeployJson);
     return { txHash, deployHash: txHash };
+  }
+
+  /**
+   * POST a signed Casper 2.0 Transaction (V1) to the node's `account_put_transaction` RPC and return
+   * its transaction hash. The signed JSON from casper-js-sdk `Transaction.toJSON()` is already the
+   * `{ Version1: {...} }` shape the RPC's `transaction` param expects.
+   */
+  private async submitSignedTransaction(signedTransactionJson: string): Promise<string> {
+    const transaction = JSON.parse(signedTransactionJson) as unknown;
+    const res = await fetch(this.rpcUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'account_put_transaction',
+        params: { transaction },
+      }),
+    });
+    if (!res.ok) {
+      throw new Error(`cspr_trade_submit_error: account_put_transaction HTTP ${res.status}`);
+    }
+    const body = (await res.json()) as {
+      result?: { transaction_hash?: unknown };
+      error?: { code?: number; message?: string; data?: unknown };
+    };
+    if (body.error) {
+      throw new Error(
+        `cspr_trade_submit_error: account_put_transaction rpc ${body.error.code} ${body.error.message ?? ''} ${
+          typeof body.error.data === 'string' ? body.error.data : ''
+        }`.trim(),
+      );
+    }
+    const hash = body.result?.transaction_hash;
+    const txHash = typeof hash === 'string' ? hash : extractTransactionHash(hash);
+    if (!txHash) {
+      throw new Error('cspr_trade_submit_error: no transaction_hash returned by account_put_transaction');
+    }
+    return txHash;
   }
 
   /**
@@ -451,8 +495,9 @@ export function createLiveCsprTradeClient(cfg: {
   senderPublicKey: string | undefined;
   pemPath: string | undefined;
   algorithm: CasperKeyAlgorithmName;
+  rpcUrl: string | undefined;
 }): CsprTradeClient {
-  if (!cfg.mcpUrl || !cfg.senderPublicKey || !cfg.pemPath) {
+  if (!cfg.mcpUrl || !cfg.senderPublicKey || !cfg.pemPath || !cfg.rpcUrl) {
     return new UnavailableCsprTradeClient();
   }
   return new LiveCsprTradeClient({
@@ -460,6 +505,7 @@ export function createLiveCsprTradeClient(cfg: {
     senderPublicKey: cfg.senderPublicKey,
     pemPath: cfg.pemPath,
     algorithm: cfg.algorithm,
+    rpcUrl: cfg.rpcUrl,
   });
 }
 
