@@ -191,18 +191,18 @@ git commit -m "feat(casper): live operator-signed CEP-18 call submitter (typed C
 - Create: `src/lib/casper/cep18-balance-reader.ts`
 - Test: `test/casper/cep18-balance-reader.test.ts`
 
-- [ ] **Step 1: Write the failing test** — with an injected HTTP/RPC fake, `readAccountPurseExists(accountHash)` returns false when `main_purse_uref` is null; `readWcsprBalance(packageHash, accountHash)` returns the parsed bigint (0n when absent).
+- [x] **Step 1: Write the failing test** — with an injected HTTP/RPC fake, `readAccountPurseExists(accountHash)` returns false when `main_purse_uref` is null; `readWcsprBalance(packageHash, accountHash)` returns the parsed bigint (0n when absent).
 
-- [ ] **Step 2: Run test → FAIL.**
+- [x] **Step 2: Run test → FAIL.**
 
-- [ ] **Step 3: Implement (NEW work — not a cspr.cloud reuse).** `balance-reader.ts` uses Casper node RPC `query_balance` with `purse_identifier.main_purse_under_account_hash` (`balance-reader.ts:18-26`), NOT cspr.cloud REST. Follow that RPC-fetch seam:
+- [x] **Step 3: Implement (NEW work — not a cspr.cloud reuse).** `balance-reader.ts` uses Casper node RPC `query_balance` with `purse_identifier.main_purse_under_account_hash` (`balance-reader.ts:18-26`), NOT cspr.cloud REST. Follow that RPC-fetch seam:
   - `readAccountPurseExists(accountHash)`: call `query_balance` for the account; a `NoMainPurse` / account-not-found RPC error (the account has never been funded) → return `false`; a successful balance → `true`. This error IS the clean purse-existence signal.
   - `readWcsprBalance(packageHash, accountHash)`: query the CEP-18 balances dictionary for the account's key (derive the dictionary item key from the account hash per CEP-18), parse the U256 → bigint; return `0n` when the dictionary item is absent (never throw). Use the WCSPR contract's `balances_uref` (from the package metadata) or a `state_get_dictionary_item` RPC. Injected fetch seam; live impl uses `env.CASPER_GUARD_ODRA_RPC_URL`.
   - Return `0n` / `false` on not-found rather than throwing, so a fresh account reads as empty (which is the real state).
 
-- [ ] **Step 4: Run test → PASS.**
+- [x] **Step 4: Run test → PASS.**
 
-- [ ] **Step 5: Commit** `feat(casper): on-chain WCSPR balance + purse-existence reader`.
+- [x] **Step 5: Commit** `feat(casper): on-chain WCSPR balance + purse-existence reader`.
 
 ---
 
