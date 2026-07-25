@@ -12,6 +12,45 @@
 
 ---
 
+## Review fixes applied (plan-document-reviewer, 2026-07-25)
+
+Three blocking issues were found and resolved in this plan. Implementer MUST honor these:
+
+1. **DOUBLE-SEND of native CSPR (critical).** The EXISTING `depositFor` calls
+   `gateway.depositFor({ agentFloatAddress })` → `treasury-client.ts:68-74` submits a NATIVE
+   CSPR transfer to `agentFloatAddress ?? operatorAccountHash`. Today that's the operator
+   (self-send, harmless). **DO NOT re-target `agentFloatAddress` to the agent's account** — that
+   would send the full native amount to the agent on top of dust+WCSPR, over-spending operator
+   CSPR and stranding native the sweep never reclaims. **FIX: keep `agentFloatAddress` = operator
+   for the native rail; pass the agent's account to `fundAgentOnChain` as a SEPARATE param
+   (`agentAccountHash`).** The native `gateway.depositFor` rail is left 100% unchanged.
+2. **DESTINATION-FENCE (`evaluateAllocation`).** `allowedDestinations` is seeded with operator
+   hashes only (`default-policies.ts:41`), so the agent's own account is DENIED
+   `service_not_allowed`. **FIX (committed, not either/or):** in `provisionHandler`, compute a
+   per-request policy whose `allowedDestinations = [...policy.allocation.allowedDestinations,
+   agentOwnAccount]` where `agentOwnAccount` is SERVER-derived via
+   `deriveCasperAccountAddress(delegatedPublicKey)` — never client-supplied. This keeps the
+   external-redirect protection intact (only the server-derived own account is added). But note
+   fix #1: the native `depositFor` destination stays the operator; the union only lets the ledger
+   reserve pass for the own-account funding. A test MUST assert an arbitrary non-own destination
+   is still denied.
+3. **RETIRE-SWEEP mechanism (Task 7) — was unimplementable as written.** Operator cannot
+   `transfer` WCSPR OUT of the agent account (no allowance). Sweeping requires the agent's VAULT
+   key to sign a `transfer_with_authorization` back to the operator (full EIP-712 payload + nonce
+   + signature, per `buildTransferWithAuthorizationArgs`) — materially more work than Task 4.
+   **FIX: Task 7 is split into its own arg-builder + vault-signing sub-steps (see revised Task 7),
+   and Task 2's manual validation is extended to cover the sweep signing path.** Sweep stays
+   best-effort/non-blocking on teardown.
+
+Non-blocking clarifications also folded in: Task 5 uses an explicit `FUNDING_FAILED` outcome (not
+an overloaded `DENY`); Task 3 readers are NEW work using RPC `query_balance`
+(`main_purse_under_account_hash`) where a "no main purse" error is the purse-existence signal
+(NOT a cspr.cloud REST reuse); Task 6 names the exact `readActiveDelegatedKey(pool,{agentId})`
+call and the `env.DEMO_CSPR_TOKEN_PACKAGE_HASH === '' || slot.operatorAccountHash === ''` →
+fall-back-to-current-behavior guards.
+
+---
+
 ## Key facts the implementer MUST know (verified against the codebase + chain)
 
 - **WCSPR is third-party.** Package hash `3d80df21ba4ee4d66a2a1f60c32570dd5685e4b279f6538162a5fd1314847c1e` (env `DEMO_CSPR_TOKEN_PACKAGE_HASH`), decimals 9, entry points confirmed on-chain: `deposit`, `transfer`, `approve`, `balance_of`, `transfer_with_authorization`. We only CALL it.
@@ -128,7 +167,11 @@ git commit -m "feat(casper): typed CEP-18 arg builders for WCSPR transfer/deposi
 
 - [ ] **Step 4: Run test to verify it passes** — PASS.
 
-- [ ] **Step 5: MANUAL CHAIN VALIDATION (record result in the plan).** Before trusting the adapter, run a throwaway script against testnet using the operator PEM to: (a) `deposit` wrap 1 CSPR and confirm operator WCSPR via `balance_of`; (b) `transfer` 1 WCSPR to agent acct `1885b99…` and confirm the deploy executes (no 60001). If `deposit` amount type is wrong, correct U512↔U256 and re-run. Delete the throwaway script after. **This step de-risks the exact CLType assumptions.**
+- [ ] **Step 5: MANUAL CHAIN VALIDATION (record results in the plan).** Before trusting the adapter, run a throwaway script against testnet using the operator PEM to:
+  (a) `deposit` wrap 1 CSPR; confirm operator WCSPR increased (via `balance_of` / dictionary read). If the `deposit` amount CLType is wrong, correct U512↔U256 and re-run.
+  (b) `transfer` 1 WCSPR to agent acct `1885b99…`; confirm the deploy EXECUTES (no `60001`). **Record the recipient CLType that succeeded** (expected `Key` account-hash) — `transfer` is not directly observed in the x402 package, so this run is its empirical confirmation.
+  (c) **Sweep path pre-check (for Task 7):** confirm the deployed WCSPR exposes `transfer_with_authorization` (already used by the facilitator) and that an operator-submitted, agent-vault-signed authorization is accepted — a minimal end-to-end of the sweep direction (agent→operator) with a tiny amount, OR at minimum verify the entry point + arg shape so Task 7 isn't building blind.
+  Delete the throwaway script after. **This step de-risks the exact CLType assumptions AND the sweep mechanism.**
 
 - [ ] **Step 6: Commit**
 
@@ -147,7 +190,10 @@ git commit -m "feat(casper): live operator-signed CEP-18 call submitter (typed C
 
 - [ ] **Step 2: Run test → FAIL.**
 
-- [ ] **Step 3: Implement** using the cspr.cloud REST reader pattern already used elsewhere (`balance-reader.ts`), reading account (`main_purse_uref`) and CEP-18 balance (dictionary/`balance_of` query). Injected fetch seam; live impl uses `CSPR_CLOUD_ACCESS_TOKEN` + `https://api.testnet.cspr.cloud`. Return `0n` on not-found rather than throwing.
+- [ ] **Step 3: Implement (NEW work — not a cspr.cloud reuse).** `balance-reader.ts` uses Casper node RPC `query_balance` with `purse_identifier.main_purse_under_account_hash` (`balance-reader.ts:18-26`), NOT cspr.cloud REST. Follow that RPC-fetch seam:
+  - `readAccountPurseExists(accountHash)`: call `query_balance` for the account; a `NoMainPurse` / account-not-found RPC error (the account has never been funded) → return `false`; a successful balance → `true`. This error IS the clean purse-existence signal.
+  - `readWcsprBalance(packageHash, accountHash)`: query the CEP-18 balances dictionary for the account's key (derive the dictionary item key from the account hash per CEP-18), parse the U256 → bigint; return `0n` when the dictionary item is absent (never throw). Use the WCSPR contract's `balances_uref` (from the package metadata) or a `state_get_dictionary_item` RPC. Injected fetch seam; live impl uses `env.CASPER_GUARD_ODRA_RPC_URL`.
+  - Return `0n` / `false` on not-found rather than throwing, so a fresh account reads as empty (which is the real state).
 
 - [ ] **Step 4: Run test → PASS.**
 
@@ -247,7 +293,22 @@ export async function fundAgentOnChain(deps: AgentFundingDeps, input: { agentAcc
 
 - [ ] **Step 2: Run tests → FAIL.**
 
-- [ ] **Step 3: Implement** — extend `DepositForParams` with optional `agentAccountHash?: string` and `funding?: AgentFundingDeps`. After the existing successful reserve + submit (deposit.ts step 2), and BEFORE incrementing `float_pending`, if `agentAccountHash` and `funding` are present, call `fundAgentOnChain`; on throw, compensate `redis.decrby(keys.allocationReserved(orgId), amount)` (same as the existing submit-failure compensation) and rethrow / return a DENY-equivalent funding-failed result. Store funding tx hashes on the allocation hash. When `agentAccountHash`/`funding` absent → behave exactly as today.
+- [ ] **Step 3: Implement** — extend `DepositForParams` with optional `agentAccountHash?: string` and `funding?: AgentFundingDeps`. Add a new result variant so a funding failure is NOT confused with a policy DENY:
+
+```typescript
+export type DepositResult =
+  | { outcome: 'SUBMITTED'; allocationId: string }
+  | { outcome: 'DENY'; reason: DenyReason }
+  | { outcome: 'FUNDING_FAILED'; reason: string }; // on-chain funding threw AFTER a passing reserve
+```
+
+Ordering (critical — preserves invariants):
+1. Existing P3-B reserve gate (unchanged). DENY → return DENY, nothing moved, funding never called.
+2. Existing `gateway.depositFor({ orgId, agentId, amount, agentFloatAddress })` native-rail submit (UNCHANGED — `agentFloatAddress` stays the operator; see Review fix #1). Its existing submit-failure compensation (`decrby allocationReserved`) is untouched.
+3. **NEW:** if `agentAccountHash` and `funding` present, call `fundAgentOnChain(funding, { agentAccountHash, amountMotes: amount.toString() })`. On throw: compensate `redis.decrby(keys.allocationReserved(orgId), amount.toString())` and return `{ outcome: 'FUNDING_FAILED', reason }`. Do NOT increment `float_pending`. (Caveat to note in code comment: the step-2 native tx already submitted; compensation restores the ledger reserve, and because the native rail targets the operator (self-send), no external value was stranded — this is exactly why fix #1 keeps the native destination as the operator.)
+4. Existing `redis.incrby(keys.floatPending(agentId), amount)` + allocation record (unchanged), now also storing `fundTxHash`/`wrapTxHash`/`dustTxHash` on the allocation hash when funding ran.
+
+When `agentAccountHash`/`funding` absent → behavior is byte-for-byte today's path.
 
 - [ ] **Step 4: Run tests → PASS. Also run the full existing deposit suite** `pnpm vitest run test/provisioning/` to prove no regression.
 
@@ -261,13 +322,23 @@ export async function fundAgentOnChain(deps: AgentFundingDeps, input: { agentAcc
 - Test: `test/control/treasury-route-agent-funding.test.ts`
 
 - [ ] **Step 1: Write failing tests:**
-  1. Agent WITH active delegated key → destination is the agent's own account hash (from `deriveCasperAccountAddress(delegatedPublicKey)`), funding deps passed to `depositFor`.
-  2. Agent WITHOUT delegated key → destination falls back to current operator/policy address, funding deps NOT passed (unchanged path).
-  3. Endpoint response shape unchanged for existing callers (still `{ outcome, allocation_id, state }`).
+  1. Agent WITH active delegated key → the NATIVE `depositFor` destination stays the OPERATOR (fix #1), `agentAccountHash` = `deriveCasperAccountAddress(delegatedPublicKey)` is passed separately, and `funding` deps are passed to `depositFor`.
+  2. Agent WITHOUT delegated key → no `agentAccountHash`/`funding` passed; behavior is today's path verbatim.
+  3. Endpoint response shape unchanged for existing callers (still `{ outcome, allocation_id, state }`); a `FUNDING_FAILED` outcome maps to a distinct non-2xx (e.g. 502) without altering the SUBMITTED/deny shapes.
+  4. Fence integrity: an arbitrary non-own destination is STILL denied `service_not_allowed` (the union only adds the server-derived own account).
+  5. Guards: when `env.DEMO_CSPR_TOKEN_PACKAGE_HASH === ''` OR `slot.operatorAccountHash === ''`, funding is skipped and the current path runs (additive fence holds in the unconfigured test harness).
+  6. **Double-send regression (reviewer-recommended):** on a full float for a delegated-key agent, the NATIVE transfer submitter is called with `toAccountHash === operator` (NOT the agent), exactly ONCE; the agent account receives only dust (native) + WCSPR. This test locks in fix #1.
 
 - [ ] **Step 2: Run tests → FAIL.**
 
-- [ ] **Step 3: Implement** — in `provisionHandler`, look up the agent's active delegated key (`readActiveDelegatedKey`). If present, set `agentFloatAddress = deriveCasperAccountAddress(pubkey)` AND ensure that address is in the allocation policy's `allowedDestinations` for the own-agent fence (add it to the effective allocation policy's allowed set at evaluation, OR extend the fence to accept the agent's own derived account — keep the fence intact, just make the agent's own account a valid self-destination). Build `AgentFundingDeps` once at app wiring (WCSPR package hash from `env.DEMO_CSPR_TOKEN_PACKAGE_HASH`, operator account from the network slot, live submitters + readers) and thread through. If no delegated key → current behavior verbatim.
+- [ ] **Step 3: Implement** — in `provisionHandler`:
+  1. Look up the active delegated key: `const active = await readActiveDelegatedKey(pool, { agentId });` (returns `{ publicKey } | null`).
+  2. Compute `const agentOwnAccount = active ? await deriveCasperAccountAddress(active.publicKey) : undefined;`
+  3. **Keep `agentFloatAddress` EXACTLY as today** (`policy.allocation.allowedDestinations[0] ?? slot.operatorAccountHash`) — this is the native rail destination; do NOT change it (fix #1).
+  4. **Fence union (fix #2):** when funding will run, evaluate the reserve against a per-request policy copy whose `allocation.allowedDestinations = [...policy.allocation.allowedDestinations, agentOwnAccount]`. `agentOwnAccount` is SERVER-derived only. Pass this copy to `depositFor`. (The own-agent fence still rejects any client/external destination; only the derived own account is added.)
+  5. Build `AgentFundingDeps` once at app wiring: `wcsprPackageHash = env.DEMO_CSPR_TOKEN_PACKAGE_HASH`, `operatorAccountHash = slot.operatorAccountHash`, live `Cep18CallSubmitter` + `NativeCsprTransferSubmitter` + readers (Chunk 1). Thread it into the handler's deps.
+  6. **Fund only when fully configured:** pass `agentAccountHash = agentOwnAccount` and `funding` to `depositFor` ONLY when `agentOwnAccount && env.DEMO_CSPR_TOKEN_PACKAGE_HASH !== '' && slot.operatorAccountHash !== ''`. Otherwise omit both → today's behavior verbatim.
+  7. Map a `FUNDING_FAILED` DepositResult to a `502`/`{ error: 'agent_funding_failed', reason }` reply; leave SUBMITTED/deny replies unchanged.
 
 - [ ] **Step 4: Run tests → PASS. Run `pnpm vitest run test/control/` and `test/config/`** to prove no regression.
 
@@ -279,24 +350,33 @@ export async function fundAgentOnChain(deps: AgentFundingDeps, input: { agentAcc
 
 ### Task 7: `sweepAgentWcsprOnChain` + wire into teardown
 
-**Files:**
-- Create: `src/engines/custody/agent-funding-sweep.ts`
-- Modify: `src/engines/provisioning/teardown.ts` (after the confirmed-float reclaim, ~line 130)
-- Test: `test/custody/agent-funding-sweep.test.ts`, `test/provisioning/teardown-onchain-sweep.test.ts`
+**Mechanism decision (fix #3):** the operator cannot `transfer` WCSPR OUT of the agent account (no allowance). The sweep therefore uses the SAME `transfer_with_authorization` rail the payment path uses, but directed agent→operator: the agent's VAULT key signs an authorization moving its WCSPR to the operator, and the OPERATOR submits it (operator pays gas). This reuses `vault.signWith` (key-vault.ts) and the exact `buildTransferWithAuthorizationArgs` CLValue shape (chunk-U7JH2PXO.mjs:375-397). `approve`+pull is rejected (two txs, needs the agent to sign an `approve` anyway — same vault-signing requirement, more steps). Sweep is best-effort/non-blocking, matching the SPIKE-03 optimistic posture (teardown.ts:22-31).
 
-- [ ] **Step 1: Write failing tests:**
-  1. Agent has on-chain WCSPR → sweep transfers it back to operator; returns swept amount.
-  2. Agent has zero WCSPR → sweep is a no-op (no tx).
-  3. Sweep tx THROWS → teardown does NOT abort; records a residual/best-effort marker (mirrors the SPIKE-03 optimistic posture already documented in teardown.ts).
-  4. Existing teardown ledger reclaim behavior unchanged (run existing `test/provisioning/teardown-sweep.test.ts`).
+**Files:**
+- Create: `src/engines/custody/wcspr-authorization.ts` (build + vault-sign a `transfer_with_authorization` payload agent→dest)
+- Create: `src/engines/custody/agent-funding-sweep.ts` (`sweepAgentWcsprOnChain`)
+- Modify: `src/engines/provisioning/teardown.ts` (after the confirmed-float reclaim, ~line 130)
+- Test: `test/custody/wcspr-authorization.test.ts`, `test/custody/agent-funding-sweep.test.ts`, `test/provisioning/teardown-onchain-sweep.test.ts`
+
+- [ ] **Step 1a: Write failing test for `wcspr-authorization.ts`** — with an injected vault fake, `buildVaultSignedTransferAuthorization({ vault, agentId, fromAccountHash, toAccountHash, amountMotes, publicKeyHex })` returns a payload whose signature is the 65-byte tagged vault signature (reuse the tag logic already added in vault-signer.ts), `from`/`to` as account-hash Keys, `amount` U256, a fresh 32-byte `nonce`, and `valid_after`/`valid_before` window. Assert arg CLTypes match the facilitator shape.
+
+- [ ] **Step 1b: Write failing tests for `sweepAgentWcsprOnChain` + teardown wiring:**
+  1. Agent has on-chain WCSPR → builds a vault-signed authorization agent→operator and the operator submits `transfer_with_authorization`; returns swept amount.
+  2. Agent has zero WCSPR → no-op (no tx, no vault call).
+  3. Sweep THROWS → `teardownAgent` does NOT abort; records a residual marker (a Redis key `agent:{id}:sweep_residual` = amount + a log line) — define the marker concretely.
+  4. Existing teardown ledger reclaim unchanged (run existing `test/provisioning/teardown-sweep.test.ts`).
 
 - [ ] **Step 2: Run tests → FAIL.**
 
-- [ ] **Step 3: Implement** `sweepAgentWcsprOnChain(deps, { agentAccountHash })`: read agent WCSPR; if > 0, move it operator-ward. Because the operator cannot `transfer` FROM the agent account directly, use the same authorization mechanism the payment path uses (agent's vault key signs a `transfer_with_authorization` to the operator) OR an `approve`+operator-pull — pick the one validated in Task 2/planning; keep it best-effort. Wire into `teardownAgent` AFTER the confirmed reclaim; wrap in try/catch so a chain failure never blocks retire (consistent with the RECLAIM-FENCE / SPIKE-03 notes).
+- [ ] **Step 3a: Implement `wcspr-authorization.ts`** — port `buildTransferWithAuthorizationArgs` (chunk-U7JH2PXO.mjs:375-397) into a typed descriptor + real-CLValue adapter (extend the Cep18 arg-builder from Chunk 1 with the `from/to/amount/valid_after/valid_before/nonce/public_key/signature` fields). Compute the EIP-712 digest the same way the client scheme does (hashTypedData over TransferWithAuthorization), sign it via `vault.signWith(agentId, digest)`, tag to 65 bytes (same helper as vault-signer.ts). Generate a random 32-byte nonce; set `valid_after=0`, `valid_before=now+maxTimeoutSeconds`.
 
-- [ ] **Step 4: Run tests → PASS. Run full `pnpm vitest run test/provisioning/`.**
+- [ ] **Step 3b: Implement `sweepAgentWcsprOnChain(deps, { agentId, agentAccountHash, agentPublicKeyHex })`** — read agent WCSPR; if `0n`, return `{ swept: 0n }`. Else build the vault-signed authorization agent→operator, submit via the operator's `Cep18CallSubmitter.call({ entryPoint:'transfer_with_authorization', args, ... })`, return `{ swept, txHash }`.
 
-- [ ] **Step 5: Commit** `feat(custody): retire-time WCSPR sweep back to operator (best-effort)`.
+- [ ] **Step 3c: Wire into `teardownAgent`** — AFTER the confirmed-float reclaim (teardown.ts:130), inside a `try/catch`: call `sweepAgentWcsprOnChain`; on throw, `redis.set(keys residual marker)` + `log.error` and continue (never block retire). Only run when funding is configured (WCSPR pkg + operator set) and the agent has a delegated key/public key available.
+
+- [ ] **Step 4: Run tests → PASS. Run full `pnpm vitest run test/provisioning/ test/custody/`.**
+
+- [ ] **Step 5: Commit** `feat(custody): retire-time vault-signed WCSPR sweep back to operator (best-effort)`.
 
 ---
 
@@ -308,7 +388,7 @@ export async function fundAgentOnChain(deps: AgentFundingDeps, input: { agentAcc
 - [ ] **Step 2** — Deploy the branch (or run the compiled server locally against testnet) and, via the console UI, click **assign float** on a fresh agent that has an active delegated key. Confirm in the DB/logs that an allocation was reserved.
 - [ ] **Step 3** — Query cspr.cloud for that agent's account: confirm `main_purse_uref` is now set and WCSPR balance equals the assigned amount.
 - [ ] **Step 4** — Drive an x402 payment for that agent (`authorize_payment` → call service → `reconcile`). Expected: `reconcile` returns `settled: true, anchored: true` — NOT `60001`.
-- [ ] **Step 5** — Retire the agent; confirm WCSPR sweeps back (or a residual is recorded) and the ledger reclaim still writes its teardown pair.
+- [ ] **Step 5** — Retire the agent; confirm WCSPR sweeps back OR a residual marker is recorded (the Redis key `agent:{id}:sweep_residual` = swept-amount, defined in Task 7), and the ledger reclaim still writes its teardown pair.
 - [ ] **Step 6** — Record the successful reconcile decision id + tx hashes in the plan as the acceptance evidence.
 
 ---
