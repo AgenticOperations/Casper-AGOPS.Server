@@ -3,6 +3,13 @@ import type { KeyVault } from './key-vault.js';
 const importRuntime = (specifier: string): Promise<unknown> =>
   import(/* @vite-ignore */ specifier) as Promise<unknown>;
 
+// casper-js-sdk CJS-interop unwrap (see key-vault.ts): plain-Node ESM import exposes no named
+// exports — only `default` — while vitest's namespace keeps named/mocked exports. Prefer named.
+const loadCasperSdk = async (): Promise<CasperSdkDeploySigning> => {
+  const ns = (await importRuntime('casper-js-sdk')) as { Deploy?: unknown; default?: unknown };
+  return (ns.Deploy !== undefined ? ns : ns.default) as CasperSdkDeploySigning;
+};
+
 // ed25519 = 1, secp256k1 = 2 (casper-js-sdk PrivateKey.d.ts KeyAlgorithm values). The vault only
 // generates ed25519 keys today (key-vault.ts), so this is fixed — widen if a vault algorithm
 // choice is ever added.
@@ -36,7 +43,7 @@ export async function signDeployJsonWithVault(input: {
   publicKeyHex: string;
   unsignedDeployJson: string;
 }): Promise<string> {
-  const sdk = (await importRuntime('casper-js-sdk')) as CasperSdkDeploySigning;
+  const sdk = await loadCasperSdk();
 
   const deploy = sdk.Deploy.fromJSON(JSON.parse(input.unsignedDeployJson));
   const rawSignature = await input.vault.signWith(input.agentId, deploy.hash.toBytes());

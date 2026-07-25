@@ -3,6 +3,16 @@ import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:
 const importRuntime = (specifier: string): Promise<unknown> =>
   import(/* @vite-ignore */ specifier) as Promise<unknown>;
 
+// casper-js-sdk is CJS: under the production Node ESM loader its dynamic-import namespace exposes
+// NO named exports (only `default` holding module.exports) — `sdk.PrivateKey` would be undefined
+// and every vault call would throw (swallowed upstream → agents stuck "Custodial"). Under vitest
+// the namespace DOES carry named (and vi.mock'd) exports. Prefer named when present, else unwrap
+// `default` — same CJS-interop bug class as associated-keys.ts (a11b4eb), but mock-preserving.
+const loadCasperSdk = async (): Promise<CasperSdkKeys> => {
+  const ns = (await importRuntime('casper-js-sdk')) as { PrivateKey?: unknown; default?: unknown };
+  return (ns.PrivateKey !== undefined ? ns : ns.default) as CasperSdkKeys;
+};
+
 type CasperSdkKeys = {
   PrivateKey: {
     generate(algorithm: unknown): { toPem(): string; publicKey: { toHex(): string }; sign(msg: Uint8Array): Uint8Array };
@@ -46,7 +56,7 @@ export class EncryptedStoreVault implements KeyVault {
   }
 
   async generateKeypair(agentId: string): Promise<{ publicKey: string }> {
-    const sdk = (await importRuntime('casper-js-sdk')) as CasperSdkKeys;
+    const sdk = await loadCasperSdk();
     const privateKey = sdk.PrivateKey.generate(sdk.KeyAlgorithm.ED25519);
     await this.store(agentId, privateKey.toPem());
     return { publicKey: privateKey.publicKey.toHex() };
@@ -58,7 +68,7 @@ export class EncryptedStoreVault implements KeyVault {
 
   async signWith(agentId: string, message: Uint8Array): Promise<Uint8Array> {
     const pem = await this.loadPem(agentId);
-    const sdk = (await importRuntime('casper-js-sdk')) as CasperSdkKeys;
+    const sdk = await loadCasperSdk();
     const privateKey = sdk.PrivateKey.fromPem(pem, sdk.KeyAlgorithm.ED25519);
     return privateKey.sign(message);
   }

@@ -7,6 +7,13 @@ import { readActiveDelegatedKey } from '../identity/delegation/delegated-keys-st
 const importRuntime = (specifier: string): Promise<unknown> =>
   import(/* @vite-ignore */ specifier) as Promise<unknown>;
 
+// casper-js-sdk CJS-interop unwrap (see key-vault.ts): plain-Node ESM import exposes no named
+// exports — only `default` — while vitest's namespace keeps named/mocked exports. Prefer named.
+const loadCasperSdk = async (): Promise<CasperSdkPublicKey> => {
+  const ns = (await importRuntime('casper-js-sdk')) as { PublicKey?: unknown; default?: unknown };
+  return (ns.PublicKey !== undefined ? ns : ns.default) as CasperSdkPublicKey;
+};
+
 type CasperSdkPublicKey = {
   PublicKey: {
     fromHex(hex: string): { accountHash(): { hashBytes: Uint8Array } };
@@ -32,7 +39,7 @@ export function createVaultCasperClientSigner(input: {
 
 /** Derives the "00" + hex account-hash address format used elsewhere in this repo (PAY_TO_ACCOUNT_HASH). */
 export async function deriveCasperAccountAddress(publicKeyHex: string): Promise<string> {
-  const sdk = (await importRuntime('casper-js-sdk')) as CasperSdkPublicKey;
+  const sdk = await loadCasperSdk();
   const accountHash = sdk.PublicKey.fromHex(publicKeyHex).accountHash();
   return '00' + Buffer.from(accountHash.hashBytes).toString('hex');
 }
