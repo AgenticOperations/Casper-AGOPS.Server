@@ -417,8 +417,11 @@ export class LiveCsprTradeClient implements CsprTradeClient {
 
   /**
    * POST a signed Casper 2.0 Transaction (V1) to the node's `account_put_transaction` RPC and return
-   * its transaction hash. The signed JSON from casper-js-sdk `Transaction.toJSON()` is already the
-   * `{ Version1: {...} }` shape the RPC's `transaction` param expects.
+   * its transaction hash. The RPC's `transaction` param is a `TransactionWrapper` — a map with EXACTLY
+   * ONE variant key (`{ Version1: {...} }` for a V1 transaction, `{ Deploy: {...} }` for a legacy
+   * deploy). `signDeployJson` produces exactly that wrapper JSON via `getTransactionWrapper().toJSON()`
+   * (see the note there); we pass it through verbatim. Sending the flattened top-level
+   * `Transaction.toJSON()` here instead yields `-32602 ... expected map with a single key`.
    */
   private async submitSignedTransaction(signedTransactionJson: string): Promise<string> {
     const transaction = JSON.parse(signedTransactionJson) as unknown;
@@ -460,8 +463,15 @@ export class LiveCsprTradeClient implements CsprTradeClient {
    * The live CSPR.trade MCP (confirmed 2026-07-23) returns a Casper 2.0 Transaction V1 object
    * (`hash` + `payload` + `approvals`), not a legacy Deploy — `sdk.Deploy.fromJSON` would silently
    * mis-parse or throw on that shape. Detects which one it actually is and uses the matching
-   * `casper-js-sdk` class (`Transaction` vs `Deploy`) — both expose the same `.sign()`/`.toJSON()`
-   * shape, so the branch is a one-line dispatch.
+   * `casper-js-sdk` class (`Transaction` vs `Deploy`).
+   *
+   * SERIALIZATION SHAPE: `account_put_transaction`'s `transaction` param is a `TransactionWrapper`
+   * (casper-js-sdk 5.x `PutTransactionRequest`) — a map with EXACTLY ONE variant key
+   * (`{ Version1: {...} }` / `{ Deploy: {...} }`). The top-level `Transaction.toJSON()` in 5.x serializes
+   * the FLATTENED transaction (many top-level keys: hash, chainName, args, target, …), NOT the envelope,
+   * so submitting it yields `-32602 ... expected map with a single key`. We therefore serialize
+   * `getTransactionWrapper().toJSON()` for the V1 path. The legacy `Deploy.toJSON()` is already the
+   * `{ Deploy: {...} }` single-key shape, so that branch passes through unchanged.
    */
   private async signDeployJson(unsignedDeployJson: string): Promise<string> {
     const { readFileSync } = await import('node:fs');
@@ -470,7 +480,17 @@ export class LiveCsprTradeClient implements CsprTradeClient {
       PrivateKey: { fromPem(content: string, algorithm: number): unknown };
       KeyAlgorithm: { ED25519: 1; SECP256K1: 2 };
       Deploy: { fromJSON(json: unknown): { sign(key: unknown): void; toJSON(): unknown } };
-      Transaction: { fromJSON(json: unknown): { sign(key: unknown): void; toJSON(): unknown } };
+      Transaction: {
+        fromJSON(json: unknown): {
+          sign(key: unknown): void;
+          getTransactionWrapper(): unknown;
+        };
+      };
+      // `TransactionWrapper.toJSON` is a STATIC (not an instance method) in casper-js-sdk 5.x — it
+      // takes the wrapper and returns the single-key `{ Version1: {...} }` envelope. Verified against
+      // 5.0.12: the wrapper instance has no `.toJSON()`, and `JSON.stringify(wrapper)` emits the wrong
+      // lowercase `transactionV1` key. Only this static produces the `Version1`-cased envelope.
+      TransactionWrapper: { toJSON(wrapper: unknown): unknown };
     };
 
     const pemContent = readFileSync(this.pemPath, 'utf8');
@@ -480,9 +500,16 @@ export class LiveCsprTradeClient implements CsprTradeClient {
 
     const parsed = JSON.parse(unsignedDeployJson) as Record<string, unknown>;
     const isTransactionV1 = 'payload' in parsed;
-    const item = isTransactionV1 ? sdk.Transaction.fromJSON(parsed) : sdk.Deploy.fromJSON(parsed);
-    item.sign(privateKey);
-    return JSON.stringify(item.toJSON());
+    if (isTransactionV1) {
+      const tx = sdk.Transaction.fromJSON(parsed);
+      tx.sign(privateKey);
+      // Wrap into the single-key `{ Version1: {...} }` envelope the RPC expects (see submit note).
+      // NB: `toJSON` is a STATIC on TransactionWrapper in 5.x, not an instance method.
+      return JSON.stringify(sdk.TransactionWrapper.toJSON(tx.getTransactionWrapper()));
+    }
+    const deploy = sdk.Deploy.fromJSON(parsed);
+    deploy.sign(privateKey);
+    return JSON.stringify(deploy.toJSON());
   }
 }
 
