@@ -41,9 +41,12 @@ export function compileSpend(layers: SpendPolicy[]): SpendPolicy {
   return {
     spendCap: bigintMin(layers.map((l) => l.spendCap)),
     perTransactionMax: bigintMin(layers.map((l) => l.perTransactionMax)),
-    // serviceScope unions across all layers: org sets the baseline every agent gets,
-    // and agent layers can extend it with additional services. Deduped, org-first order.
-    serviceScope: [...new Set(layers.flatMap((l) => l.serviceScope))],
+    // serviceScope is an allowlist → set-INTERSECTION across layers (policy-engine-FINAL.md:62-67),
+    // same as railPermission/allowedDestinations. "Child can only narrow a parent, never widen": a
+    // scope removed from the org policy is removed from every agent's effective scope, and an agent
+    // can never grant itself a service the org didn't allow. (A prior union broke both: org removals
+    // never propagated to agents, and agents could widen beyond the org.)
+    serviceScope: intersectAll(layers.map((l) => l.serviceScope)),
     railPermission: intersectAll(layers.map((l) => l.railPermission)),
     velocityLimitPerHour: numberMin(layers.map((l) => l.velocityLimitPerHour)),
   };
