@@ -292,15 +292,15 @@ export async function fundAgentOnChain(deps: AgentFundingDeps, input: { agentAcc
 - Modify: `src/engines/provisioning/deposit.ts`
 - Test: `test/provisioning/deposit-onchain-funding.test.ts`
 
-- [ ] **Step 1: Write failing tests:**
+- [x] **Step 1: Write failing tests:**
   1. Reserve DENY → `fundAgentOnChain` NOT called (ceiling gate precedes funding).
   2. Reserve ALLOW + funding succeeds → returns SUBMITTED, `float_pending` incremented (unchanged), funding tx recorded on the allocation record.
   3. Reserve ALLOW + funding THROWS → reserve compensated (`allocationReserved` decremented back), `float_pending` NOT left incremented, outcome surfaces as a funding failure (not a silent SUBMITTED).
   4. Agent has NO delegated account hash supplied → funding skipped, current behavior preserved (additive fence).
 
-- [ ] **Step 2: Run tests → FAIL.**
+- [x] **Step 2: Run tests → FAIL.**
 
-- [ ] **Step 3: Implement** — extend `DepositForParams` with optional `agentAccountHash?: string` and `funding?: AgentFundingDeps`. Add a new result variant so a funding failure is NOT confused with a policy DENY:
+- [x] **Step 3: Implement** — extend `DepositForParams` with optional `agentAccountHash?: string` and `funding?: AgentFundingDeps`. Add a new result variant so a funding failure is NOT confused with a policy DENY:
 
 ```typescript
 export type DepositResult =
@@ -317,9 +317,9 @@ Ordering (critical — preserves invariants):
 
 When `agentAccountHash`/`funding` absent → behavior is byte-for-byte today's path.
 
-- [ ] **Step 4: Run tests → PASS. Also run the full existing deposit suite** `pnpm vitest run test/provisioning/` to prove no regression.
+- [x] **Step 4: Run tests → PASS. Also run the full existing deposit suite** `pnpm vitest run test/provisioning/` to prove no regression.
 
-- [ ] **Step 5: Commit** `feat(provisioning): JIT on-chain agent funding downstream of ceiling reserve`.
+- [x] **Step 5: Commit** `feat(provisioning): JIT on-chain agent funding downstream of ceiling reserve`.
 
 ### Task 6: Route — derive agent's own account as float destination + wire funding deps
 

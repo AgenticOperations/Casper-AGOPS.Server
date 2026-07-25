@@ -5,6 +5,11 @@ import type { AllocationPolicy, DenyReason } from '../../contracts/index.js';
 import { keys } from '../../redis/keyspace.js';
 import { evaluateAllocation } from '../enforcement/allocation-eval.js';
 import type { CasperTreasuryClient } from '../../lib/casper/treasury-client.js';
+import {
+  fundAgentOnChain as fundAgentOnChainDefault,
+  type AgentFundingDeps,
+  type FundAgentResult,
+} from '../custody/agent-funding.js';
 
 /**
  * E5 Provisioning — `depositFor` / `topup` (engine-specs-FINAL.md:128, policy-engine-FINAL.md:253-262).
@@ -41,11 +46,26 @@ export interface DepositForParams {
   secondsSinceLastAllocation: number | null;
   /** Submit time (Unix seconds); stored so L3 finality confirm can record it as the enforcement timestamp. */
   now: number;
+  /**
+   * The agent's OWN on-chain account hash (SERVER-derived from the delegated key). When present with
+   * `funding`, JIT WCSPR funding runs AFTER the reserve, mirroring the reserved amount into this account.
+   * ABSENT → today's float path runs byte-for-byte (additive fence). NOT the native-rail destination —
+   * `agentFloatAddress` stays the operator (Review fix #1: no native double-send).
+   */
+  agentAccountHash?: string;
+  /** Injected on-chain funding deps; present only when funding is fully configured. */
+  funding?: AgentFundingDeps;
+  /** Injected funding fn (defaults to the real orchestrator); overridable for tests. */
+  fundAgentOnChain?: (
+    deps: AgentFundingDeps,
+    input: { agentAccountHash: string; amountMotes: string },
+  ) => Promise<FundAgentResult>;
 }
 
 export type DepositResult =
   | { outcome: 'SUBMITTED'; allocationId: string }
-  | { outcome: 'DENY'; reason: DenyReason };
+  | { outcome: 'DENY'; reason: DenyReason }
+  | { outcome: 'FUNDING_FAILED'; reason: string }; // on-chain funding threw AFTER a passing reserve
 
 export async function depositFor(
   deps: ProvisionDeps,
@@ -54,6 +74,7 @@ export async function depositFor(
   const { redis, gateway } = deps;
   const { orgId, agentId, agentFloatAddress, amount, policy, kind, secondsSinceLastAllocation, now } =
     params;
+  const runFunding = params.fundAgentOnChain ?? fundAgentOnChainDefault;
 
   // 1. P3-B gate. A DENY reserves nothing and moves no money (it never reaches Circle).
   const decision = await evaluateAllocation(redis, {
@@ -78,6 +99,26 @@ export async function depositFor(
     throw err;
   }
 
+  // 2b. NEW (JIT on-chain funding — Review fix #1/#2). Downstream of the passing reserve, mirror the
+  //     reserved amount into the agent's OWN account as WCSPR so x402 settlements stop hitting 60001.
+  //     Runs ONLY when the agent account + funding deps are present (fully-configured, delegated-key agent).
+  //     On throw: compensate the reserve (same pattern as the native-submit failure above) and surface a
+  //     distinct FUNDING_FAILED — NOT a policy DENY, and NOT a silent SUBMITTED.
+  //     Note: the step-2 native tx already submitted, but its destination is the OPERATOR (self-send, fix
+  //     #1), so no external value is stranded; compensation restores only the ledger reserve.
+  let fundingHashes: FundAgentResult | undefined;
+  if (params.agentAccountHash && params.funding) {
+    try {
+      fundingHashes = await runFunding(params.funding, {
+        agentAccountHash: params.agentAccountHash,
+        amountMotes: amount.toString(),
+      });
+    } catch (err) {
+      await redis.decrby(keys.allocationReserved(orgId), amount.toString());
+      return { outcome: 'FUNDING_FAILED', reason: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   // 3. Two-phase float: INCR float_pending ONLY (BUG-29). Confirmed float / recordAllocation wait for L3.
   await redis.incrby(keys.floatPending(agentId), amount.toString());
 
@@ -92,6 +133,13 @@ export async function depositFor(
     txRef,
     state: 'PENDING',
     submittedAt: String(now),
+    ...(fundingHashes
+      ? {
+          fundTxHash: fundingHashes.transferTxHash,
+          ...(fundingHashes.wrapTxHash ? { wrapTxHash: fundingHashes.wrapTxHash } : {}),
+          ...(fundingHashes.dustTxHash ? { dustTxHash: fundingHashes.dustTxHash } : {}),
+        }
+      : {}),
   });
   await redis.sadd(keys.pendingAllocations(agentId), allocationId);
 
