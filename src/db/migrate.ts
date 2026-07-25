@@ -56,6 +56,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const dbUrl = process.env.DATABASE_URL;
   if (!dbUrl) { console.error('DATABASE_URL is required'); process.exit(1); }
   const pool = new pg.Pool({ connectionString: dbUrl });
+  // Prevent an unhandled 'error' event (dropped idle connection) from crashing the migrator.
+  pool.on('error', (err) => { console.error('[pg-pool:migrate] idle client error:', err.message); });
   runMigrations(pool)
     .then((ran) => {
       // eslint-disable-next-line no-console

@@ -760,6 +760,20 @@ async function reconcileTool(
   );
 
   const finalDecision = await readCasperGuardDecision(app.deps.pg, decisionId);
+
+  // Graceful failure surfacing: when a decision did not settle (FAILED_TERMINAL / EXPIRED),
+  // the bare status is not actionable. The concrete reason was recorded on the reconciliation
+  // attempt that produced the failure (settlement-reader → reconcile-worker:100-108), as
+  // errorCode + evidence. Pull the latest such attempt so the caller sees *why* it failed
+  // (e.g. facilitator_settle_failed: insufficient balance, execution_error, header_decode_failed)
+  // instead of an opaque FAILED_TERMINAL.
+  const failureAttempt =
+    result.status !== 'SETTLED'
+      ? [...(finalDecision?.reconciliationAttempts ?? [])]
+          .filter((a) => a.status === 'failed')
+          .sort((a, b) => b.attemptNumber - a.attemptNumber)[0]
+      : undefined;
+
   return {
     decision_id: result.decisionId,
     status: result.status,
@@ -768,6 +782,13 @@ async function reconcileTool(
     tx_hash: finalDecision?.txHash ?? null,
     deploy_hash: finalDecision?.deployHash ?? null,
     anchor_tx_hash: finalDecision?.auditAnchors?.find((a) => a.status === 'confirmed')?.txHash ?? null,
+    ...(failureAttempt
+      ? {
+          failure_reason: failureAttempt.errorCode ?? 'unknown',
+          failure_source: failureAttempt.source,
+          failure_evidence: failureAttempt.evidence,
+        }
+      : {}),
   };
 }
 
