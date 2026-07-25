@@ -1,8 +1,27 @@
+import { writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { loadEnv } from './config/env.js';
 import { createPgPool } from './db/client.js';
 import { createRedis } from './redis/client.js';
 import { buildApp } from './app.js';
 import { createCasperTreasuryClient } from './lib/casper/treasury-client.js';
+
+/**
+ * Resolve a signer PEM to a filesystem path from EITHER a path OR a base64-encoded inline value.
+ * Production (Railway) has no local PEM files, so the operator key is provided as *_PEM_INLINE; we
+ * decode it to a 0600 temp file and hand that path to the treasury client. Path wins when both are set.
+ * (Mirrors resolveSlotPemPath in config/casper-guard.ts, which the guard signer already uses.)
+ */
+function resolvePemPath(pemPath: string, pemInline: string, tmpFileName: string): string {
+  if (pemPath !== '') return pemPath;
+  if (pemInline !== '') {
+    const tmpPath = join(tmpdir(), tmpFileName);
+    writeFileSync(tmpPath, Buffer.from(pemInline, 'base64').toString('utf8'), { mode: 0o600 });
+    return tmpPath;
+  }
+  return '';
+}
 import { buildCasperGuardDeps } from './config/casper-guard.js';
 import { EncryptedStoreVault } from './engines/custody/key-vault.js';
 import { createPgVaultBlobStore } from './engines/custody/pg-vault-blob-store.js';
@@ -23,10 +42,15 @@ async function main(): Promise<void> {
   const redis = createRedis(env);
 
   // Testnet treasury gateway (the default; reads the testnet operator account on the testnet RPC).
+  const testnetPemPath = resolvePemPath(
+    env.CASPER_GUARD_SIGNER_PEM_PATH,
+    env.CASPER_GUARD_SIGNER_PEM_INLINE,
+    'casper_guard_treasury_signer_testnet.pem',
+  );
   const gateway = createCasperTreasuryClient({
     rpcUrl: env.CASPER_GUARD_FACILITATOR_RPC_URL || env.CASPER_GUARD_ODRA_RPC_URL,
     operatorAccountHash: env.CASPER_OPERATOR_ACCOUNT_HASH,
-    pemPath: env.CASPER_GUARD_SIGNER_PEM_PATH,
+    pemPath: testnetPemPath,
     algorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
   });
 
@@ -35,12 +59,18 @@ async function main(): Promise<void> {
   // the mainnet toggle's /v1/treasury/* calls 503 network_not_configured instead of silently showing
   // testnet balances.
   const mainnetRpc = env.CASPER_GUARD_MAINNET_FACILITATOR_RPC_URL || env.CASPER_GUARD_MAINNET_ODRA_RPC_URL;
+  const mainnetPemPath =
+    resolvePemPath(
+      env.CASPER_GUARD_MAINNET_SIGNER_PEM_PATH,
+      env.CASPER_GUARD_MAINNET_SIGNER_PEM_INLINE,
+      'casper_guard_treasury_signer_mainnet.pem',
+    ) || testnetPemPath;
   const mainnetGateway =
     mainnetRpc && env.CASPER_MAINNET_OPERATOR_ACCOUNT_HASH
       ? createCasperTreasuryClient({
           rpcUrl: mainnetRpc,
           operatorAccountHash: env.CASPER_MAINNET_OPERATOR_ACCOUNT_HASH,
-          pemPath: env.CASPER_GUARD_MAINNET_SIGNER_PEM_PATH || env.CASPER_GUARD_SIGNER_PEM_PATH,
+          pemPath: mainnetPemPath,
           algorithm: env.CASPER_GUARD_MAINNET_SIGNER_ALGORITHM,
         })
       : undefined;
