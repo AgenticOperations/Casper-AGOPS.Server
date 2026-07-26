@@ -92,17 +92,31 @@ async function main(): Promise<void> {
         })
       : undefined;
 
-  // JIT on-chain agent funding (testnet slot). Undefined when not fully configured → treasury float
-  // provisioning runs today's path verbatim. Resolves the WCSPR balances uref at boot (one RPC).
-  let agentFunding;
-  try {
-    agentFunding = await buildAgentFundingDeps(env, testnetPemPath);
-  } catch (err) {
-    // Never block boot on funding wiring — fall back to the current float path.
-    // eslint-disable-next-line no-console
-    console.warn('agent funding deps unavailable, float funding disabled:', err);
-    agentFunding = undefined;
-  }
+  /*
+   * JIT on-chain agent funding, built PER NETWORK. Each slot carries its own RPC, operator account,
+   * WCSPR package hash, signing key and chain name — a single shared instance meant a mainnet
+   * top-up was signed with the testnet chain name and rejected by every mainnet node
+   * (`-32016 Invalid transaction: invalid chain name`). Either slot may be undefined when that
+   * network is not fully configured; the treasury route then skips on-chain funding for it.
+   */
+  const buildFundingSlot = async (
+    pem: string,
+    network: 'casper:casper-test' | 'casper:casper',
+  ) => {
+    try {
+      return await buildAgentFundingDeps(env, pem, network);
+    } catch (err) {
+      // Never block boot on funding wiring — fall back to the float-only path for that network.
+      // eslint-disable-next-line no-console
+      console.warn(`agent funding deps unavailable for ${network}, funding disabled:`, err);
+      return undefined;
+    }
+  };
+  const agentFunding = await buildFundingSlot(testnetPemPath, 'casper:casper-test');
+  const agentFundingByNetwork = {
+    'casper:casper-test': agentFunding,
+    'casper:casper': await buildFundingSlot(mainnetPemPath, 'casper:casper'),
+  };
 
   const app = buildApp({
     env,
@@ -112,6 +126,7 @@ async function main(): Promise<void> {
     gatewayByNetwork,
     ...(vault ? { vault } : {}),
     ...(agentFunding ? { agentFunding } : {}),
+    agentFundingByNetwork,
     casperGuard: buildCasperGuardDeps(env, { pool: pgPool, ...(vault ? { vault } : {}) }),
   });
 

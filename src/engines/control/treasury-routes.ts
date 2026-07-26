@@ -114,7 +114,15 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
       // JIT on-chain funding gating. Derive the agent's OWN account from its ACTIVE delegated key
       // (SERVER-derived, never client-supplied) ONLY when funding is fully configured — this also
       // avoids loading casper-js-sdk (deriveCasperAccountAddress) in the unconfigured harness.
-      const funding = app.deps.agentFunding;
+      /*
+       * Select the funding slot for the REQUEST's network. Falling back to `agentFunding` (the
+       * testnet slot) only when no per-network map is present keeps existing test harnesses that
+       * inject a single instance working — but a configured mainnet request must never borrow the
+       * testnet slot, or it signs with the wrong chain name and the node rejects it (-32016).
+       */
+      const funding = app.deps.agentFundingByNetwork
+        ? app.deps.agentFundingByNetwork[resolved.network]
+        : app.deps.agentFunding;
       const fundingConfigured =
         funding !== undefined &&
         env.DEMO_CSPR_TOKEN_PACKAGE_HASH !== '' &&

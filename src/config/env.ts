@@ -139,6 +139,16 @@ const EnvSchema = z.object({
     .regex(/^[0-9a-fA-F]{64}$/)
     .or(z.literal(''))
     .default(''),
+  /**
+   * MAINNET WCSPR package hash. A DIFFERENT contract from the testnet one — funding an agent on
+   * mainnet with the testnet hash would target a contract that does not exist there. Empty means
+   * mainnet agent funding stays disabled (the route reports it rather than crashing).
+   */
+  DEMO_CSPR_MAINNET_TOKEN_PACKAGE_HASH: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/)
+    .or(z.literal(''))
+    .default(''),
   DEMO_CSPR_TOKEN_NAME: z.string().min(1).default('CSPRX'),
   DEMO_CSPR_TOKEN_VERSION: z.string().min(1).default('1'),
 

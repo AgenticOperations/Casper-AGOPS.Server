@@ -85,6 +85,14 @@ export interface AppDeps {
    * unit/HTTP harness → float provisioning runs today's path verbatim (additive fence).
    */
   agentFunding?: AgentFundingDeps;
+  /**
+   * Per-network funding slots. The treasury route selects by the REQUEST's network so a mainnet
+   * top-up is signed for mainnet. `agentFunding` above remains the testnet slot for existing
+   * call sites and test harnesses that inject a single instance.
+   */
+  agentFundingByNetwork?: Partial<
+    Record<'casper:casper-test' | 'casper:casper', AgentFundingDeps | undefined>
+  >;
 }
 
 /**
