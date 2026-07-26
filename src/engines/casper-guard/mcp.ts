@@ -36,6 +36,7 @@ import {
   CSPR_TRADE_READ_ONLY_TOOLS,
   isCsprTradeReadOnlyTool,
   callCsprTradeReadOnly,
+  wholeTokensFromBaseUnits,
 } from '../../lib/casper/cspr-trade.js';
 import { settleHold } from '../ledger/window.js';
 import { emitDecisionSafe } from '../monitoring/telemetry.js';
@@ -331,7 +332,7 @@ export const TOOL_DESCRIPTORS = [
         arguments: {
           type: 'object',
           description:
-            'Arguments for that tool, passed through unchanged. e.g. get_quote takes { token_in, token_out, amount, type: "exact_in" } where amount is in the smallest unit. Omit for tools that take none.',
+            'Arguments for that tool. e.g. get_quote takes { token_in, token_out, amount, type: "exact_in" }. IMPORTANT: pass `amount` in MOTES (smallest unit, 1 CSPR = 1000000000), the same unit every other Guard tool uses — the server converts it to the whole-token figure the venue expects and echoes both back as amount_motes / amount_sent_to_venue. Omit for tools that take none.',
           additionalProperties: true,
         },
       },
@@ -972,14 +973,42 @@ async function tradeDataTool(
     };
   }
 
-  const toolArgs =
+  const rawArgs =
     args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
       ? (args.arguments as Record<string, unknown>)
       : {};
 
+  /*
+   * Normalize `amount` from Guard's unit (motes) to the venue's unit (whole tokens).
+   *
+   * Every other Guard tool takes amounts in motes — the intent schemas say so explicitly — so an
+   * agent will naturally pass motes here too. CSPR.trade's `amount` parameter is whole tokens and
+   * it scales by 10^decimals itself, meaning an unconverted "5000000000" asks it to price FIVE
+   * BILLION CSPR. Against a ~5M-token pool that legitimately quotes ~99.9% price impact: a correct
+   * answer to a nonsensical question, and one that reads exactly like a venue bug.
+   *
+   * Converting here keeps the passthrough consistent with the rest of Guard's surface. The
+   * pre-conversion value is echoed back as `amount_motes` so the caller can see what was sent.
+   */
+  const toolArgs = { ...rawArgs };
+  let amountMotes: string | undefined;
+  if (typeof toolArgs.amount === 'string' && /^[0-9]+$/.test(toolArgs.amount)) {
+    amountMotes = toolArgs.amount;
+    toolArgs.amount = wholeTokensFromBaseUnits(toolArgs.amount);
+  }
+
   try {
     const data = await callCsprTradeReadOnly(mcpUrl, toolName, toolArgs);
-    return { ok: true, network, tool: toolName, data };
+    return {
+      ok: true,
+      network,
+      tool: toolName,
+      // Echo the unit conversion so a caller can confirm which trade was actually priced.
+      ...(amountMotes !== undefined
+        ? { amount_motes: amountMotes, amount_sent_to_venue: toolArgs.amount }
+        : {}),
+      data,
+    };
   } catch (err) {
     // Venue errors are reported, never masked as empty data — a caller must be able to tell
     // "the venue said no" apart from "there is no liquidity".

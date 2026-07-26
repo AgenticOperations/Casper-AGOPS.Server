@@ -42,6 +42,42 @@ describe('base units → whole tokens', () => {
   });
 });
 
+/*
+ * The trade_data passthrough forwards arguments to the venue. Guard's own tools all take motes, so
+ * an agent naturally passes motes here too — and CSPR.trade's `amount` is whole tokens. Left
+ * unconverted, a 5 CSPR quote came back as 99.89% price impact with recommendedSlippageBps 9990,
+ * which reads like a venue bug rather than a unit error. This pins the normalization.
+ */
+describe('trade_data passthrough amount normalization', () => {
+  // Mirrors the handler's normalization step.
+  const normalize = (args: Record<string, unknown>): Record<string, unknown> => {
+    const out = { ...args };
+    if (typeof out.amount === 'string' && /^[0-9]+$/.test(out.amount)) {
+      out.amount = wholeTokensFromBaseUnits(out.amount);
+    }
+    return out;
+  };
+
+  it('converts a motes amount to whole tokens', () => {
+    expect(normalize({ token_in: 'CSPR', amount: '5000000000' }).amount).toBe('5');
+  });
+
+  it('leaves non-amount arguments untouched', () => {
+    const out = normalize({ token_in: 'CSPR', token_out: 'sCSPR', amount: '1000000000', type: 'exact_in' });
+    expect(out).toMatchObject({ token_in: 'CSPR', token_out: 'sCSPR', type: 'exact_in', amount: '1' });
+  });
+
+  it('ignores a non-integer amount rather than mangling it', () => {
+    // Already whole-token, or a symbol/hash — must pass through untouched.
+    expect(normalize({ amount: '5.5' }).amount).toBe('5.5');
+    expect(normalize({ amount: 5 }).amount).toBe(5);
+  });
+
+  it('is a no-op for tools that take no amount', () => {
+    expect(normalize({})).toEqual({});
+  });
+});
+
 describe('quote/request unit-mismatch guard', () => {
   it('accepts a quote whose echoed amountIn matches the request', () => {
     expect(() =>
