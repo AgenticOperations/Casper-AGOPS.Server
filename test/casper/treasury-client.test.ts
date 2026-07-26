@@ -7,6 +7,8 @@ describe('createCasperTreasuryClient', () => {
     operatorAccountHash: 'a'.repeat(64),
     pemPath: '/tmp/does-not-matter-for-this-test.pem',
     algorithm: 'ed25519' as const,
+    // Required: the submitter signs for this chain, and omitting it silently defaulted to testnet.
+    chainName: 'casper-test' as const,
   };
 
   it('getBalances reads the operator account balance via Casper RPC', async () => {
