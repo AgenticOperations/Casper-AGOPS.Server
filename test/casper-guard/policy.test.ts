@@ -510,6 +510,11 @@ describe('AgentOps policy and hold lifecycle', () => {
     if (!stores) return skip();
     const { agentId, orgId } = await seedAgent(stores.pool, stores.redis, 100);
     const amount = '9223372036854775808';
+    // x402-payment rails enforce solvency against confirmed float (policy.ts:174), so an agent with
+    // no float DENYs insufficient_float long before the big-number arithmetic under test is reached.
+    // Seed float above the amount so this exercises what it claims to: reserving a value past
+    // Redis's int64 range without corrupting the counter.
+    await stores.redis.set(keys.floatConfirmed(agentId), (BigInt(amount) * 2n).toString());
     const signer = signerReturning('sha256:large-amount-signature');
 
     const result = await authorizeCasperGuardIntent(

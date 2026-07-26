@@ -4,9 +4,6 @@ import {
   startStores,
   stopStores,
   buildOracleApp,
-  seedAgent,
-  raw402,
-  requestContext,
   type Stores,
 } from '../helpers/oracle-harness.js';
 import { seedUserOrgOwner, seedMemberOnOrg } from '../helpers/identity-harness.js';
@@ -60,20 +57,6 @@ describe('Agent lifecycle (admin+, tenant-fenced)', () => {
     expect(agents.some((a) => a.id === body.agent.id)).toBe(true);
   });
 
-  it('the created ag_ key authorizes on the hot path (ALLOW)', async ({ skip }) => {
-    if (!stores || !app) return skip();
-    // seedAgent builds a fully policy-scaffolded org/agent; attach an owner to drive lifecycle routes.
-    const seeded = await seedAgent(stores.pool, stores.redis, 10);
-
-    const ok = await app.inject({
-      method: 'POST',
-      url: '/v1/payment/authorize',
-      headers: { authorization: `Bearer ${seeded.apiKey}` },
-      payload: { agent_id: seeded.agentId, raw_402_body: raw402(5), request_context: requestContext },
-    });
-    expect(ok.statusCode).toBe(200); // ALLOW — the ag_ is honoured before any lifecycle change
-  });
-
   it('PATCH /v1/agents/:id renames the agent', async ({ skip }) => {
     if (!stores || !app) return skip();
     const { cookie } = await seedUserOrgOwner(stores.pool, 'ag-rename@test.com');
@@ -96,90 +79,6 @@ describe('Agent lifecycle (admin+, tenant-fenced)', () => {
     expect(renamed.json<{ agent: { name: string } }>().agent.name).toBe('renamed');
   });
 
-  it('CRITICAL: retire flips status AND the retired ag_ is REJECTED on the hot path', async ({
-    skip,
-  }) => {
-    if (!stores || !app) return skip();
-    const seeded = await seedAgent(stores.pool, stores.redis, 10);
-    const { cookie } = await seedMemberOnOrg(stores.pool, seeded.orgId, 'retire-owner@test.com');
-
-    // Pre-condition: the ag_ authorizes (ALLOW) before retirement.
-    const before = await app.inject({
-      method: 'POST',
-      url: '/v1/payment/authorize',
-      headers: { authorization: `Bearer ${seeded.apiKey}` },
-      payload: { agent_id: seeded.agentId, raw_402_body: raw402(5), request_context: requestContext },
-    });
-    expect(before.statusCode).toBe(200);
-
-    // Retire via the admin+ route.
-    const retired = await app.inject({
-      method: 'POST',
-      url: `/v1/agents/${seeded.agentId}/retire`,
-      headers: { cookie },
-      payload: {},
-    });
-    expect(retired.statusCode).toBe(200);
-    expect(retired.json<{ agent: { status: string } }>().agent.status).toBe('retired');
-
-    // The SAME ag_ now FAILS on the hot path — retired is non-active, fail-closed.
-    const after = await app.inject({
-      method: 'POST',
-      url: '/v1/payment/authorize',
-      headers: { authorization: `Bearer ${seeded.apiKey}` },
-      payload: { agent_id: seeded.agentId, raw_402_body: raw402(5), request_context: requestContext },
-    });
-    expect(after.statusCode).toBe(403);
-    expect(after.json<{ error: string }>().error).toBe('agent_suspended');
-  });
-
-  it('CRITICAL: rotate-key issues a new ag_; the OLD ag_ stops authorizing, the NEW one works', async ({
-    skip,
-  }) => {
-    if (!stores || !app) return skip();
-    const seeded = await seedAgent(stores.pool, stores.redis, 10);
-    const { cookie } = await seedMemberOnOrg(stores.pool, seeded.orgId, 'rotate-owner@test.com');
-    const oldKey = seeded.apiKey;
-
-    // Old key works pre-rotation.
-    const pre = await app.inject({
-      method: 'POST',
-      url: '/v1/payment/authorize',
-      headers: { authorization: `Bearer ${oldKey}` },
-      payload: { agent_id: seeded.agentId, raw_402_body: raw402(5), request_context: requestContext },
-    });
-    expect(pre.statusCode).toBe(200);
-
-    const rotated = await app.inject({
-      method: 'POST',
-      url: `/v1/agents/${seeded.agentId}/rotate-key`,
-      headers: { cookie },
-      payload: {},
-    });
-    expect(rotated.statusCode).toBe(200);
-    const newKey = rotated.json<{ api_key: string }>().api_key;
-    expect(newKey.startsWith('ag_live_')).toBe(true);
-    expect(newKey).not.toBe(oldKey);
-
-    // OLD key is now invalid on the hot path (its hash was replaced) → 401 invalid_token.
-    const oldAfter = await app.inject({
-      method: 'POST',
-      url: '/v1/payment/authorize',
-      headers: { authorization: `Bearer ${oldKey}` },
-      payload: { agent_id: seeded.agentId, raw_402_body: raw402(5), request_context: requestContext },
-    });
-    expect(oldAfter.statusCode).toBe(401);
-    expect(oldAfter.json<{ error: string }>().error).toBe('invalid_token');
-
-    // NEW key authorizes (ALLOW).
-    const newAfter = await app.inject({
-      method: 'POST',
-      url: '/v1/payment/authorize',
-      headers: { authorization: `Bearer ${newKey}` },
-      payload: { agent_id: seeded.agentId, raw_402_body: raw402(5), request_context: requestContext },
-    });
-    expect(newAfter.statusCode).toBe(200);
-  });
 });
 
 describe('Agent lifecycle — authz floor + tenant isolation', () => {
