@@ -102,7 +102,7 @@ const INTENT_SCHEMA = {
       description: 'Native Casper deploy — transfer, contract-call, or contract-install. Use resource_id "casper:deploy:guard-registry".',
       properties: {
         kind: { type: 'string', enum: ['casper-deploy'] },
-        network: { type: 'string', enum: ['casper:casper-test'], description: 'Must be "casper:casper-test" — mainnet is not permitted.' },
+        network: { type: 'string', enum: ['casper:casper-test', 'casper:casper'], description: 'Default to "casper:casper-test". Use "casper:casper" (MAINNET — real, irreversible funds) ONLY when the user explicitly asked for mainnet. Never infer mainnet.' },
         resource_id: { type: 'string', description: 'Must be in the agent\'s service_scope. Use "casper:deploy:guard-registry" for Casper deploys.' },
         amount: { type: 'string', pattern: '^[1-9][0-9]*$', description: 'Amount in motes (integer string, no decimals).' },
         asset: { ...ASSET_SCHEMA, description: 'Use {"kind":"native","symbol":"CSPR"} for native CSPR transfers.' },
@@ -119,7 +119,7 @@ const INTENT_SCHEMA = {
       description: 'CSPR.trade DEX swap on Casper testnet. Valid tokens: CSPR and sCSPR (wrapped CSPR). USDT does NOT exist on Casper testnet — never use it. Provide from_asset, to_asset, amount, min_received, and slippage_bps — the server fetches the real quote internally. Use resource_id "cspr.trade:swap". route_id is optional (server derives it).',
       properties: {
         kind: { type: 'string', enum: ['cspr-trade'] },
-        network: { type: 'string', enum: ['casper:casper-test'], description: 'Must be "casper:casper-test" — mainnet is not permitted.' },
+        network: { type: 'string', enum: ['casper:casper-test', 'casper:casper'], description: 'Default to "casper:casper-test". Use "casper:casper" (MAINNET — real, irreversible funds) ONLY when the user explicitly asked for mainnet. Never infer mainnet.' },
         resource_id: { type: 'string', description: 'Must be "cspr.trade:swap".' },
         amount: { type: 'string', pattern: '^[1-9][0-9]*$', description: 'Amount of from_asset in smallest unit (motes for CSPR).' },
         from_asset: { ...ASSET_SCHEMA, description: 'Asset being sold.' },
@@ -195,7 +195,7 @@ export const TOOL_DESCRIPTORS = [
       'casper-deploy is ONLY for resource_id "casper:deploy:guard-registry" (on-chain contract calls).',
       'cspr-trade is for DEX swaps with resource_id "cspr.trade:swap".',
       'evm-transfer is for EVM chain transfers with evm:sepolia or evm:base-sepolia network.',
-      'MAINNET IS BLOCKED — only casper:casper-test, evm:sepolia, and evm:base-sepolia are accepted.',
+      'NETWORK: default to casper:casper-test. casper:casper is MAINNET — real, irreversible funds — and is permitted ONLY when the user explicitly asked for mainnet in this request. Never infer it, never carry it over from an earlier step, and confirm before authorizing. EVM rails use evm:sepolia or evm:base-sepolia.',
       'Field names use snake_case (e.g. deploy_kind, resource_id, from_asset) — camelCase is rejected.',
       'For casper-deploy: call casper_guard_reconcile with decision_id after ALLOW — operator broadcasts.',
       'For evm-transfer: broadcast from your own wallet first, then call casper_guard_reconcile with tx_hash.',
@@ -457,8 +457,9 @@ async function authorizePaymentTool(
   const auth = await requireAgent(app, authz, args.agent_id);
   const idempotencyKey = requireString(args.idempotency_key, 'idempotency_key');
   const intent = intentFromPaymentRequired(args.payment_required);
-  // MCP tool calls have no per-request network header (unlike the HTTP routes) — always testnet.
-  const selection = selectNetworkSlot(deps, undefined);
+  // Route to the slot the intent names — see slotNetworkForIntent. The network here comes from the
+  // service's own 402 challenge, so a mainnet service resolves to the mainnet slot.
+  const selection = selectNetworkSlot(deps, slotNetworkForIntent(intent.network));
   if (!selection.ok) throw new Error(selection.error);
   const result = await authorizeWithStoredPolicy(app, deps, selection.slot, {
     orgId: auth.orgId,
@@ -495,8 +496,14 @@ async function authorizeActionTool(
   const auth = await requireAgent(app, authz, args.agent_id);
   const idempotencyKey = requireString(args.idempotency_key, 'idempotency_key');
   const intent = normalizeCasperGuardIntent(args.intent);
-  // MCP tool calls have no per-request network header (unlike the HTTP routes) — always testnet.
-  const selection = selectNetworkSlot(deps, undefined);
+  /*
+   * Route to the slot the INTENT names. MCP calls carry no x-agentops-network header, so the
+   * intent's own network is the only signal — passing undefined here would sign and settle a
+   * `casper:casper` intent with the TESTNET signer/facilitator/anchorer while recording it as
+   * mainnet. A mainnet intent with no configured mainnet slot fails closed (503-equivalent
+   * network_not_configured) rather than silently executing on testnet.
+   */
+  const selection = selectNetworkSlot(deps, slotNetworkForIntent(intent.network));
   if (!selection.ok) throw new Error(selection.error);
   const result = await authorizeWithStoredPolicy(app, deps, selection.slot, {
     orgId: auth.orgId,
@@ -653,6 +660,17 @@ async function policyCheckTool(
     allowed_networks: allowedNetworks,
     allowed_resource_ids: serviceScope,
   };
+}
+
+/**
+ * Map an intent's network onto the Casper slot that must sign and settle it.
+ *
+ * Casper networks map to their own slot. EVM networks (evm:sepolia / evm:base-sepolia) have no
+ * Casper slot of their own — they are user-broadcast rails where the Casper side only records and
+ * anchors — so they resolve to the default (testnet) slot exactly as before this routing existed.
+ */
+export function slotNetworkForIntent(network: string): string | undefined {
+  return network === 'casper:casper' || network === 'casper:casper-test' ? network : undefined;
 }
 
 /**
