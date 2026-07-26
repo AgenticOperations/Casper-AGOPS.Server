@@ -9,7 +9,9 @@ import { saveGraph, markGraphDeployed, getGraph, listGraphs } from '../../../src
  */
 
 function fakePool(rows: unknown[] = []) {
-  const query = vi.fn(async () => ({ rows, rowCount: rows.length }));
+  // Typed as (sql, params) so `query.mock.calls[0][0]` is a string rather than an element of an
+  // empty tuple — otherwise every SQL assertion below is a TS2493 error.
+  const query = vi.fn(async (_sql: string, _params?: unknown[]) => ({ rows, rowCount: rows.length }));
   return { pool: { query } as unknown as pg.Pool, query };
 }
 
