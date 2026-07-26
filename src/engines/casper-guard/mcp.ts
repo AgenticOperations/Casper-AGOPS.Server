@@ -32,6 +32,11 @@ import {
   type AnchorStatus,
 } from './reconcile-worker.js';
 import { composeSettlementReader } from '../../lib/casper/settlement-reader.js';
+import {
+  CSPR_TRADE_READ_ONLY_TOOLS,
+  isCsprTradeReadOnlyTool,
+  callCsprTradeReadOnly,
+} from '../../lib/casper/cspr-trade.js';
 import { settleHold } from '../ledger/window.js';
 import { emitDecisionSafe } from '../monitoring/telemetry.js';
 import { CASPER_X402_HEADER_NAME } from '../../lib/casper/x402.js';
@@ -298,6 +303,42 @@ export const TOOL_DESCRIPTORS = [
     },
   },
   {
+    name: 'casper_guard_trade_data',
+    description: [
+      'Read LIVE market data from the CSPR.trade DEX through Guard — tradable tokens and their CEP-18 package hashes, pools and reserves, real swap quotes, price impact, balances, and history.',
+      'Use this for anything about what can actually be traded and at what price: "which pairs exist", "what is the package hash for sCSPR", "what would 5 CSPR get me", "what is the price impact".',
+      'This is the authoritative source for pre-trade numbers — always quote from here before proposing or authorizing a cspr-trade swap, and never estimate a fill price from any other source.',
+      'READ-ONLY: no funds move and nothing is signed. Executing a swap still requires casper_guard_authorize_action followed by casper_guard_reconcile.',
+      'Distinct from casper_guard_list_services, which lists the paid x402 HTTP demo services (order book, risk oracle) — those are separate endpoints with their own payment flow.',
+      'Free — no x402 payment, no decision, no hold.',
+    ].join(' '),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'The calling agent id.' },
+        network: {
+          type: 'string',
+          enum: ['casper:casper-test', 'casper:casper'],
+          description:
+            'Which venue to read. Defaults to casper:casper-test. Reading casper:casper (mainnet) market data is safe and moves no funds — mainnet pools are far deeper, so mainnet quotes are more meaningful than near-empty testnet pools.',
+        },
+        tool: {
+          type: 'string',
+          enum: [...CSPR_TRADE_READ_ONLY_TOOLS],
+          description:
+            'The CSPR.trade read tool to call. get_tokens lists tradable tokens with package hashes; get_pairs lists pools with reserves; get_quote prices a swap; estimate_price_impact reports slippage severity.',
+        },
+        arguments: {
+          type: 'object',
+          description:
+            'Arguments for that tool, passed through unchanged. e.g. get_quote takes { token_in, token_out, amount, type: "exact_in" } where amount is in the smallest unit. Omit for tools that take none.',
+          additionalProperties: true,
+        },
+      },
+      required: ['agent_id', 'tool'],
+    },
+  },
+  {
     name: 'casper_guard_create_agent',
     description: [
       'FLEET MANAGEMENT (admin/operator use only — requires an sk_ operator key, not an agent ag_ key).',
@@ -425,6 +466,10 @@ export function registerCasperGuardMcpRoute(app: FastifyInstance): void {
           return reply
             .code(200)
             .send(rpcToolResult(rpc.id, listServicesTool()));
+        case 'casper_guard_trade_data':
+          return reply
+            .code(200)
+            .send(rpcToolResult(rpc.id, await tradeDataTool(app, deps, request.headers.authorization, call.data.arguments)));
         case 'casper_guard_create_agent':
           return reply
             .code(200)
@@ -880,6 +925,72 @@ async function readTenantDecision(
   const decision = await readCasperGuardDecision(app.deps.pg, decisionId);
   if (!decision || decision.orgId !== orgId) throw new Error('decision_not_found');
   return decision;
+}
+
+/**
+ * Read-only CSPR.trade market-data passthrough.
+ *
+ * Authenticates the agent (so calls are attributable and tenant-fenced) but creates NO decision and
+ * NO hold — nothing is spent and nothing is signed. The allowlist inside callCsprTradeReadOnly is
+ * what keeps this from becoming a way around authorize_action: an agent can read any quote it likes,
+ * but cannot reach build_swap or submit_transaction through this path.
+ *
+ * The venue's response is returned verbatim under `data`. Guard does not reshape market data — it
+ * decides whether the call is allowed, not what the market says.
+ */
+async function tradeDataTool(
+  app: FastifyInstance,
+  deps: CasperGuardDeps | undefined,
+  authz: string | undefined,
+  args: Record<string, unknown>,
+) {
+  await requireAgent(app, authz, args.agent_id);
+  const toolName = requireString(args.tool, 'tool');
+  const network =
+    args.network === 'casper:casper' || args.network === 'casper:casper-test'
+      ? args.network
+      : 'casper:casper-test';
+
+  const mcpUrl = deps?.tradeDataUrls?.[network];
+  if (!mcpUrl) {
+    return {
+      ok: false,
+      error: 'trade_venue_not_configured',
+      network,
+      detail: `No CSPR.trade venue is configured for ${network}.`,
+    };
+  }
+
+  if (!isCsprTradeReadOnlyTool(toolName)) {
+    return {
+      ok: false,
+      error: 'cspr_trade_tool_not_permitted',
+      tool: toolName,
+      detail:
+        'Only read-only market-data tools are available here. Executing a swap requires casper_guard_authorize_action followed by casper_guard_reconcile.',
+      permitted_tools: [...CSPR_TRADE_READ_ONLY_TOOLS],
+    };
+  }
+
+  const toolArgs =
+    args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
+      ? (args.arguments as Record<string, unknown>)
+      : {};
+
+  try {
+    const data = await callCsprTradeReadOnly(mcpUrl, toolName, toolArgs);
+    return { ok: true, network, tool: toolName, data };
+  } catch (err) {
+    // Venue errors are reported, never masked as empty data — a caller must be able to tell
+    // "the venue said no" apart from "there is no liquidity".
+    return {
+      ok: false,
+      error: 'cspr_trade_read_failed',
+      network,
+      tool: toolName,
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 function listServicesTool() {

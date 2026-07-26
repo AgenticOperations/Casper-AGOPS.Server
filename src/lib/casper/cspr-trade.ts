@@ -217,6 +217,61 @@ export function parseMcpToolText(text: string, toolName = 'mcp_tool'): unknown {
   }
 }
 
+/**
+ * CSPR.trade tools an agent may invoke through Guard's read-only passthrough.
+ *
+ * READ-ONLY BY CONSTRUCTION. Every entry here answers a question; none constructs, signs, or
+ * broadcasts a transaction. The fund-moving tools the venue also exposes — build_swap,
+ * build_approve_token, build_add_liquidity, build_remove_liquidity, submit_transaction — are
+ * deliberately ABSENT: reaching them directly would let an agent assemble and broadcast a swap
+ * without an authorize_action decision, bypassing spend caps, service scope, and velocity limits.
+ * Guard would stop being a firewall.
+ *
+ * Adding a name to this list grants every agent access to it, so add only tools that read.
+ */
+export const CSPR_TRADE_READ_ONLY_TOOLS = [
+  'get_tokens',
+  'get_pairs',
+  'get_pair_details',
+  'get_currencies',
+  'get_quote',
+  'estimate_slippage',
+  'estimate_price_impact',
+  'get_pair_price_history',
+  'get_token_price_history',
+  'get_native_cspr_balance',
+  'get_token_balance',
+  'get_liquidity_positions',
+  'get_impermanent_loss',
+  'get_swap_history',
+  'get_portfolio_value',
+  'get_position_status',
+] as const;
+
+export type CsprTradeReadOnlyTool = (typeof CSPR_TRADE_READ_ONLY_TOOLS)[number];
+
+export function isCsprTradeReadOnlyTool(name: string): name is CsprTradeReadOnlyTool {
+  return (CSPR_TRADE_READ_ONLY_TOOLS as readonly string[]).includes(name);
+}
+
+/**
+ * Invoke ONE read-only CSPR.trade tool and return its raw text response.
+ *
+ * The allowlist is enforced here, at the boundary, rather than by the caller — so every route into
+ * the venue passes the same check. The venue's own response is returned verbatim: Guard does not
+ * reshape or interpret market data, it only decides whether the call is permitted.
+ */
+export async function callCsprTradeReadOnly(
+  mcpUrl: string,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<string> {
+  if (!isCsprTradeReadOnlyTool(toolName)) {
+    throw new Error(`cspr_trade_tool_not_permitted: ${toolName}`);
+  }
+  return mcpCallRaw(mcpUrl, toolName, args);
+}
+
 /** Like mcpCall but returns the raw text content block without JSON-parsing it. */
 async function mcpCallRaw(mcpUrl: string, toolName: string, args: Record<string, unknown>): Promise<string> {
   const headers = { 'content-type': 'application/json', 'accept': 'application/json, text/event-stream' };

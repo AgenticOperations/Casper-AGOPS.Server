@@ -73,6 +73,16 @@ export interface CasperGuardDeps {
    * to obtain a signature for an out-of-scope payTo recipient.
    */
   serviceDestinations?: Record<string, string>;
+  /**
+   * CSPR.trade venue URL per network, for READ-ONLY market-data passthrough.
+   *
+   * Deliberately separate from `byNetwork[...].tradeExecutor`: executing a swap needs a configured
+   * signer and key material, but READING a quote or token list needs neither. Keeping these apart
+   * lets an operator serve mainnet market data (pairs, package hashes, real price impact) without
+   * enabling mainnet execution — reads move no funds. Populated straight from CSPR_TRADE_MCP_URL /
+   * CSPR_TRADE_MAINNET_MCP_URL; absent when that network has no venue configured.
+   */
+  tradeDataUrls?: Partial<Record<'casper:casper-test' | 'casper:casper', string>>;
   // per-network
   byNetwork?: Partial<Record<'casper:casper-test' | 'casper:casper', CasperGuardNetworkSlot>>;
   // legacy top-level (testnet mirror) — kept until all route call sites migrate to byNetwork

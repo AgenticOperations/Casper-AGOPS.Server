@@ -323,9 +323,20 @@ export function buildCasperGuardDeps(
     }
   }
 
+  /*
+   * Read-only venue URLs, independent of whether that network can EXECUTE. Both slots are populated
+   * whenever a URL is configured — mainnet market data is readable even on a testnet-only execution
+   * deployment, because reading a quote moves no funds. assertTradeVenueMatchesNetwork has already
+   * verified each URL belongs to its own network.
+   */
+  const tradeDataUrls: Partial<Record<'casper:casper-test' | 'casper:casper', string>> = {};
+  if (env.CSPR_TRADE_MCP_URL !== '') tradeDataUrls['casper:casper-test'] = env.CSPR_TRADE_MCP_URL;
+  if (env.CSPR_TRADE_MAINNET_MCP_URL !== '') tradeDataUrls['casper:casper'] = env.CSPR_TRADE_MAINNET_MCP_URL;
+
   return {
     networks: enabledNetworks,
     ...(serviceDestinations ? { serviceDestinations } : {}),
+    ...(Object.keys(tradeDataUrls).length > 0 ? { tradeDataUrls } : {}),
     mcpUrl: env.CASPER_GUARD_MCP_URL,
     trade: {
       maxSlippageBps: env.CSPR_TRADE_MAX_SLIPPAGE_BPS,
