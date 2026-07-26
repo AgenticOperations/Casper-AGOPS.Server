@@ -217,6 +217,61 @@ export function parseMcpToolText(text: string, toolName = 'mcp_tool'): unknown {
   }
 }
 
+/** Casper's native precision. CSPR and sCSPR are both 9-decimal; the venue reports per-token. */
+export const CSPR_DECIMALS = 9;
+
+/**
+ * Convert a base-unit amount (motes) to the WHOLE-TOKEN decimal string get_quote expects.
+ *
+ * Guard stores every intent amount in base units — `intent.amount` is motes, per the MCP schema
+ * ("Amount in motes"). CSPR.trade's `amount` parameter is whole tokens, which it then scales by
+ * 10^decimals itself. Passing motes straight through therefore asks for 10^9 times the intended
+ * trade: a 5 CSPR swap becomes a 5,000,000,000 CSPR swap, which against a ~5M-token pool quotes at
+ * ~99.9% price impact. That is a REAL quote for an absurd request, not a venue bug — the venue is
+ * healthy, the units were wrong on our side.
+ *
+ * Trailing zeros are trimmed so 5000000000 motes renders "5", not "5.000000000".
+ */
+export function wholeTokensFromBaseUnits(baseUnits: string, decimals = CSPR_DECIMALS): string {
+  const scale = 10n ** BigInt(decimals);
+  const value = BigInt(baseUnits);
+  const whole = value / scale;
+  const frac = value % scale;
+  if (frac === 0n) return whole.toString();
+  const fracStr = frac.toString().padStart(decimals, '0').replace(/0+$/, '');
+  return `${whole}.${fracStr}`;
+}
+
+/**
+ * Guard against a unit mismatch silently producing a catastrophic-looking quote.
+ *
+ * The venue echoes the trade it actually priced. If that differs from what we asked for, our
+ * conversion is wrong and every downstream number — price impact, recommended slippage,
+ * min_received — describes a different trade. Rather than let a 99% impact figure flow onward as
+ * though it were market reality, fail loudly with both values visible.
+ *
+ * Tolerance is exact-match on the base-unit amount: this compares our own arithmetic against the
+ * venue's echo, so any divergence is a bug, not rounding.
+ */
+export function assertQuoteMatchesRequest(requestedBaseUnits: string, quote: McpQuoteResult): void {
+  if (quote.amountIn == null) return; // Venue did not echo the input — nothing to verify against.
+  let echoed: bigint;
+  let requested: bigint;
+  try {
+    echoed = BigInt(quote.amountIn);
+    requested = BigInt(requestedBaseUnits);
+  } catch {
+    return;
+  }
+  if (echoed !== requested) {
+    throw new Error(
+      `cspr_trade_quote_unit_mismatch: requested ${requested} base units but the venue priced ` +
+        `${echoed} (${quote.amountInFormatted ?? '?'} whole tokens). Refusing to use this quote — ` +
+        'price impact and min_received would describe a different trade.',
+    );
+  }
+}
+
 /**
  * CSPR.trade tools an agent may invoke through Guard's read-only passthrough.
  *
@@ -298,11 +353,27 @@ async function mcpCallRaw(mcpUrl: string, toolName: string, args: Record<string,
   return textBlock?.text ?? '';
 }
 
+/**
+ * get_quote's actual response shape (verified live against mcp.cspr.trade and the self-hosted
+ * testnet deployment, 2026-07). Fields are camelCase; an earlier snake_case guess (amount_out /
+ * price_impact / slippage) matched nothing, so every value silently read as undefined.
+ *
+ * UNITS: `amountIn`/`amountOut` are BASE units (motes for a 9-decimal token). The `*Formatted`
+ * fields and the `amount` REQUEST parameter are WHOLE tokens. Mixing the two is the trap — see
+ * wholeTokensFromBaseUnits.
+ */
 type McpQuoteResult = {
-  amount_out?: string;
-  price_impact?: number;
-  slippage?: number;
-  route?: string;
+  amountIn?: string;
+  amountOut?: string;
+  amountInFormatted?: string;
+  amountOutFormatted?: string;
+  executionPrice?: string;
+  midPrice?: string;
+  priceImpact?: string;
+  recommendedSlippageBps?: string;
+  tokenInDecimals?: number;
+  tokenOutDecimals?: number;
+  pathSymbols?: string[];
 };
 
 type McpSwapBuildResult = {
@@ -388,21 +459,37 @@ export class LiveCsprTradeClient implements CsprTradeClient {
 
     // Fetch real AMM quote. estimate_slippage returns plain-text on this MCP server, so call
     // it separately with a text-safe helper that doesn't throw on non-JSON content.
+    // intent.amount is base units (motes); the venue's `amount` parameter is whole tokens.
+    const amountWholeTokens = wholeTokensFromBaseUnits(intent.amount);
+
     const quoteResult = await mcpCall<McpQuoteResult>(this.mcpUrl, 'get_quote', {
       token_in: tokenIn,
       token_out: tokenOut,
-      amount: intent.amount,
+      amount: amountWholeTokens,
       type: 'exact_in',
     });
+    // Fail loudly if the venue priced a different trade than we asked for.
+    assertQuoteMatchesRequest(intent.amount, quoteResult);
 
-    // estimate_slippage returns a human-readable text block, not JSON.
-    // Parse "Actual slippage from spot: X%" from the text, falling back to quote.slippage.
-    let slippageBps = quoteResult.slippage != null ? Math.round(quoteResult.slippage * 100) : 0;
+    /*
+     * estimate_slippage returns a human-readable text block, not JSON — parsed below.
+     *
+     * Seed from the venue's own recommendation, which already accounts for this trade's price
+     * impact (e.g. 31 bps for a 5 CSPR swap into a deep pool). The previous seed read
+     * `quoteResult.slippage`, a field get_quote never returns, so it was always 0 — meaning a
+     * failed estimate_slippage call left slippageBps at 0 and the trade looked risk-free.
+     */
+    let slippageBps =
+      quoteResult.recommendedSlippageBps != null
+        ? Math.round(Number(quoteResult.recommendedSlippageBps))
+        : quoteResult.priceImpact != null
+          ? Math.round(Number(quoteResult.priceImpact) * 100)
+          : 0;
     try {
       const slippageText = await mcpCallRaw(this.mcpUrl, 'estimate_slippage', {
         token_in: tokenIn,
         token_out: tokenOut,
-        amount: intent.amount,
+        amount: amountWholeTokens,
       });
       // Try JSON parse first (future-proofing).
       try {
@@ -426,8 +513,12 @@ export class LiveCsprTradeClient implements CsprTradeClient {
       riskLabel: slippageBps < 50 ? 'low' : slippageBps < 150 ? 'medium' : 'high',
       // Encode the token pair into the quoteId so submit() can reconstruct it.
       quoteId: `lq_${tokenIn}_${tokenOut}_${intent.amount}_${Date.now()}`,
-      // The venue's expected output. Pre-trade only — see CsprTradeQuote.quotedAmountOut.
-      ...(quoteResult.amount_out != null ? { quotedAmountOut: String(quoteResult.amount_out) } : {}),
+      /*
+       * Expected output in BASE units — directly comparable to an intent's min_received, which is
+       * also base units. `amountOut` (not amountOutFormatted) is already base units, so no scaling
+       * is applied here. Pre-trade only; see CsprTradeQuote.quotedAmountOut.
+       */
+      ...(quoteResult.amountOut != null ? { quotedAmountOut: String(quoteResult.amountOut) } : {}),
     };
   }
 
@@ -435,8 +526,11 @@ export class LiveCsprTradeClient implements CsprTradeClient {
     // Reconstruct trade params from the quoteId (format: lq_TOKEN_A_TOKEN_B_AMOUNT_TS).
     const parts = input.quoteId.split('_');
     const tokenIn = parts[1] ?? 'CSPR';
-    const tokenOut = parts[2] ?? 'USDT';
-    const amount = parts[3] ?? '0';
+    const tokenOut = parts[2] ?? 'sCSPR';
+    // The quoteId encodes the intent amount in BASE units; build_swap takes whole tokens, exactly
+    // like get_quote. Passing base units here would build a swap 10^9 times the intended size.
+    const amountBaseUnits = parts[3] ?? '0';
+    const amount = wholeTokensFromBaseUnits(amountBaseUnits);
 
     // Step 1: Build unsigned deploy from mcp.cspr.trade.
     // Casper public key format: 2-char algo tag + raw key bytes as hex.
