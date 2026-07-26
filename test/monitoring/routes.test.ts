@@ -72,6 +72,69 @@ describe('E8 read-side feed (engine-specs-FINAL.md:258)', () => {
     expect(ok.body).not.toMatch(/signature|x_payment/i);
   });
 
+  it('filters the decision feed by the x-agentops-network header, defaulting to testnet', async ({
+    skip,
+  }) => {
+    if (!stores || !app) return skip();
+    const { orgId, sk } = await seedOrgAdmin();
+    await emitDecisionSafe(stores.redis, {
+      paymentId: 'pay_net_testnet',
+      agentId: 'agt_net',
+      orgId,
+      outcome: 'ALLOW',
+      railScheme: 'casper-x402',
+      railChain: 'casper:casper-test',
+      resourceId: 'svc:casper-paid-api',
+      amount: '10',
+      ts: 1,
+    });
+    await emitDecisionSafe(stores.redis, {
+      paymentId: 'pay_net_mainnet',
+      agentId: 'agt_net',
+      orgId,
+      outcome: 'ALLOW',
+      railScheme: 'casper-x402',
+      railChain: 'casper:casper',
+      resourceId: 'svc:casper-paid-api',
+      amount: '10',
+      ts: 2,
+    });
+
+    const defaultRes = await app.inject({
+      method: 'GET',
+      url: '/v1/monitoring/decisions?limit=10',
+      headers: { authorization: `Bearer ${sk}` },
+    });
+    expect(defaultRes.statusCode).toBe(200);
+    const defaultBody = defaultRes.json<{ decisions: Array<{ paymentId: string }> }>();
+    const defaultIds = defaultBody.decisions.map((d) => d.paymentId);
+    expect(defaultIds).toContain('pay_net_testnet');
+    expect(defaultIds).not.toContain('pay_net_mainnet');
+
+    const mainnetRes = await app.inject({
+      method: 'GET',
+      url: '/v1/monitoring/decisions?limit=10',
+      headers: { authorization: `Bearer ${sk}`, 'x-agentops-network': 'casper:casper' },
+    });
+    expect(mainnetRes.statusCode).toBe(200);
+    const mainnetBody = mainnetRes.json<{ decisions: Array<{ paymentId: string }> }>();
+    const mainnetIds = mainnetBody.decisions.map((d) => d.paymentId);
+    expect(mainnetIds).toContain('pay_net_mainnet');
+    expect(mainnetIds).not.toContain('pay_net_testnet');
+  });
+
+  it('400s the decision feed for an invalid x-agentops-network header', async ({ skip }) => {
+    if (!stores || !app) return skip();
+    const { sk } = await seedOrgAdmin();
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/monitoring/decisions',
+      headers: { authorization: `Bearer ${sk}`, 'x-agentops-network': 'casper:bogus' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: 'invalid_network' });
+  });
+
   it('SSE returns a bounded text/event-stream snapshot of the feed (admin-authed)', async ({ skip }) => {
     if (!stores || !app) return skip();
     const { orgId, sk } = await seedOrgAdmin();

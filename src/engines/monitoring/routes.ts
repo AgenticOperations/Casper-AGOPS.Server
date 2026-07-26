@@ -7,6 +7,23 @@ import {
   reinstateAgent,
 } from '../control/kill-switch.js';
 import { readRecentDecisions, readDecisionsSince, tailNewDecisions, type DecisionEntry } from './telemetry.js';
+import {
+  CASPER_NETWORK_HEADER,
+  resolveRequestNetwork,
+  type CasperScopedNetwork,
+} from '../casper-guard/network-header.js';
+
+const CASPER_SCOPED_NETWORKS: readonly CasperScopedNetwork[] = ['casper:casper-test', 'casper:casper'];
+
+/**
+ * A decision belongs to the requested Casper network if its rail_chain is that network, OR if its
+ * rail_chain is not a Casper network at all (e.g. 'arc', 'evm:sepolia') — non-Casper rails are shown
+ * under both toggle positions since the Casper network toggle doesn't apply to them.
+ */
+function matchesRequestNetwork(entry: DecisionEntry, network: CasperScopedNetwork): boolean {
+  if (!CASPER_SCOPED_NETWORKS.includes(entry.railChain as CasperScopedNetwork)) return true;
+  return entry.railChain === network;
+}
 
 /**
  * E8 read-side surface + the P1-actuated control routes (engine-specs-FINAL.md:256,258). All routes are
@@ -38,7 +55,11 @@ export function registerMonitoringRoutes(app: FastifyInstance): void {
     const { redis } = app.deps;
     const auth = await authForRoute(app, request, 'member');
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
-    const decisions = await readRecentDecisions(redis, auth.principal.orgId, clampLimit(request.query));
+    const resolvedNetwork = resolveRequestNetwork(request.headers[CASPER_NETWORK_HEADER]);
+    if (!resolvedNetwork.ok) return reply.code(400).send({ error: 'invalid_network' });
+    const decisions = (
+      await readRecentDecisions(redis, auth.principal.orgId, clampLimit(request.query))
+    ).filter((d) => matchesRequestNetwork(d, resolvedNetwork.network));
     return reply.code(200).send({ decisions });
   });
 
@@ -55,6 +76,8 @@ export function registerMonitoringRoutes(app: FastifyInstance): void {
     const { redis } = app.deps;
     const auth = await authForRoute(app, request, 'member');
     if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
+    const resolvedNetwork = resolveRequestNetwork(request.headers[CASPER_NETWORK_HEADER]);
+    if (!resolvedNetwork.ok) return reply.code(400).send({ error: 'invalid_network' });
     const orgId = auth.principal.orgId;
 
     const limit = clampLimit(request.query);
@@ -64,12 +87,13 @@ export function registerMonitoringRoutes(app: FastifyInstance): void {
     const backlog = sinceId
       ? await readDecisionsSince(redis, orgId, sinceId, limit)
       : [...(await readRecentDecisions(redis, orgId, limit))].reverse();
+    const visibleBacklog = backlog.filter((d) => matchesRequestNetwork(d, resolvedNetwork.network));
 
     if (!follow) {
       reply.header('content-type', 'text/event-stream');
       reply.header('cache-control', 'no-cache');
       reply.header('x-accel-buffering', 'no');
-      return reply.send(backlog.map(frame).join(''));
+      return reply.send(visibleBacklog.map(frame).join(''));
     }
 
     // Live tail. Hijack the socket; XREAD BLOCK on a dedicated connection until the client disconnects.
@@ -77,8 +101,10 @@ export function registerMonitoringRoutes(app: FastifyInstance): void {
     const res = reply.raw;
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' });
     // cursor: newest backlog id → tail from there; or sinceId; or '$' (only entries arriving after subscribe).
+    // Cursor advances from the UNFILTERED backlog/tail so an other-network entry is skipped from
+    // display but never re-read on the next XREAD BLOCK.
     let cursor = backlog.length ? backlog[backlog.length - 1]!.id : (sinceId ?? '$');
-    for (const d of backlog) res.write(frame(d));
+    for (const d of visibleBacklog) res.write(frame(d));
 
     const sub = redis.duplicate();
     let closed = false;
@@ -95,7 +121,10 @@ export function registerMonitoringRoutes(app: FastifyInstance): void {
         const fresh = await tailNewDecisions(sub, orgId, cursor, 15_000);
         if (closed) break;
         if (fresh.length === 0) { res.write(': keep-alive\n\n'); continue; }
-        for (const d of fresh) { res.write(frame(d)); cursor = d.id; }
+        for (const d of fresh) {
+          if (matchesRequestNetwork(d, resolvedNetwork.network)) res.write(frame(d));
+          cursor = d.id;
+        }
       }
     } catch {
       // connection error → teardown; visibility degrades, payments unaffected.

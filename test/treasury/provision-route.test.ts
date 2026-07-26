@@ -1,15 +1,28 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { startStores, stopStores, buildOracleApp, seedAgent, type Stores } from '../helpers/oracle-harness.js';
-import { GatewayClient } from '../../src/lib/circle/gateway.js';
-import { createStubTransport } from '../../src/lib/circle/stub-transport.js';
+import type { CasperTreasuryClient } from '../../src/lib/casper/treasury-client.js';
 import { keys } from '../../src/redis/keyspace.js';
+
+function fakeGateway(): CasperTreasuryClient {
+  let n = 0;
+  return {
+    getBalances: vi.fn(async () => ({ available: 0n })),
+    deposit: vi.fn(),
+    depositFor: vi.fn(async () => {
+      n += 1;
+      return { id: `gw_tx_${n}` };
+    }),
+    reclaimFor: vi.fn(),
+    isFinal: vi.fn(async () => false),
+  };
+}
 
 let stores: Stores | null = null;
 let app: FastifyInstance | undefined;
 beforeAll(async () => {
   stores = await startStores();
-  if (stores) app = buildOracleApp(stores.pool, stores.redis, undefined, new GatewayClient(createStubTransport(stores.redis)));
+  if (stores) app = buildOracleApp(stores.pool, stores.redis, undefined, fakeGateway());
 }, 180_000);
 afterAll(async () => { await app?.close(); await stopStores(stores); });
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DEFAULT_GRAPH_MODEL } from '../engines/control/graph-builder/prompt-to-graph.js';
 
 /**
  * Single source of truth for runtime configuration.
@@ -16,26 +17,11 @@ const EnvSchema = z.object({
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
 
-  ARC_RPC_URL: z.string().url(),
-  ARC_CHAIN_ID: z.coerce.number().int().positive(),
-  // Live Arc reads gate. OFF by default; `true` swaps the hot-path EIP-712 domain source from the known
-  // USDC v2 constant to the viem-backed EIP-5267 live read (buildHotPath). The live read fails closed.
-  ARC_LIVE: z.enum(['true', 'false']).default('false'),
-  ARC_USDC_ADDRESS: z.string().regex(/^0x[0-9a-fA-F]{40}$/, 'must be a 20-byte hex address'),
-  GATEWAY_WALLET_ADDRESS: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
-  GATEWAY_MINTER_ADDRESS: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
   SOLANA_RPC_URL: z.string().url().or(z.literal('')).default(''),
 
   KMS_PROVIDER: z.enum(['local', 'aws']).default('local'),
   KMS_TREASURY_KEY_ID: z.string().default(''),
   KMS_AGENT_FLOAT_KEY_ID: z.string().default(''),
-
-  CIRCLE_API_BASE: z.string().url().default('https://api.circle.com'),
-  CIRCLE_API_KEY: z.string().default(''),
-  // Explicit opt-in for the REAL Circle Gateway transport. A key may be present for other Circle use
-  // WITHOUT routing treasury through Gateway — the Gateway protocol (on-chain deposit/attestation/mint)
-  // must be integrated first. Default false keeps treasury on the working local transport.
-  CIRCLE_GATEWAY_LIVE: z.enum(['true', 'false']).default('false'),
 
   // CasperHacks product surface. Defaults are honest-blocked: routes boot, report what is missing, and
   // signing/settlement fail closed until a real testnet key or live integration is supplied.
@@ -51,6 +37,10 @@ const EnvSchema = z.object({
   CASPER_GUARD_SIGNER_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('ed25519'),
   CASPER_GUARD_NETWORKS: z.string().min(1).default('casper:casper-test'),
   CASPER_GUARD_MCP_URL: z.string().min(1).default('/v1/casper-guard/mcp'),
+  // Milestone B (D-3): master secret the EncryptedStoreVault derives its AES-256-GCM key from.
+  // Empty = per-agent delegated signing is unavailable; every authorize falls back to the
+  // existing custodial CasperSignerProvider (unchanged behavior for agents with no delegated key).
+  CASPER_GUARD_VAULT_MASTER_SECRET: z.string().default(''),
   CASPER_GUARD_FACILITATOR_RPC_URL: z.string().url().or(z.literal('')).default(''),
   CASPER_GUARD_FACILITATOR_URL: z.string().url().or(z.literal('')).default(''),
   CSPR_CLOUD_ACCESS_TOKEN: z.string().default(''),
@@ -62,6 +52,27 @@ const EnvSchema = z.object({
   CASPER_GUARD_ODRA_RPC_URL: z.string().url().or(z.literal('')).default(''),
   CASPER_GUARD_ODRA_ENTRY_POINT: z.string().min(1).default('anchor_decision'),
   CASPER_GUARD_ODRA_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('secp256k1'),
+  // Chain name for the Odra anchor deploy. 'casper-test' = testnet, 'casper' = mainnet.
+  CASPER_GUARD_ODRA_CHAIN_NAME: z.enum(['casper-test', 'casper']).default('casper-test'),
+
+  // --- Mainnet-slot siblings. Empty = mainnet not configured (mainnet toggle 503s honestly). ---
+  CASPER_GUARD_MAINNET_SIGNER_PEM_PATH: z.string().default(''),
+  CASPER_GUARD_MAINNET_SIGNER_PEM_INLINE: z.string().default(''),
+  CASPER_GUARD_MAINNET_SIGNER_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('ed25519'),
+  CASPER_GUARD_MAINNET_ODRA_PACKAGE_HASH: z.string().regex(/^[0-9a-fA-F]{64}$/).or(z.literal('')).default(''),
+  CASPER_GUARD_MAINNET_ODRA_RPC_URL: z.string().url().or(z.literal('')).default(''),
+  CASPER_GUARD_MAINNET_ODRA_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('ed25519'),
+  CASPER_GUARD_MAINNET_FACILITATOR_RPC_URL: z.string().url().or(z.literal('')).default(''),
+  CASPER_GUARD_MAINNET_FACILITATOR_URL: z.string().url().or(z.literal('')).default(''),
+  // MAINNET trade venue — the public https://mcp.cspr.trade/mcp. Real funds, real liquidity.
+  // Boot fails if this points anywhere else (a self-hosted/testnet venue would silently execute
+  // mainnet-intended swaps against a testnet pool).
+  CSPR_TRADE_MAINNET_MCP_URL: z.string().url().or(z.literal('')).default(''),
+  CSPR_TRADE_MAINNET_SENDER_PUBLIC_KEY: z.string().default(''),
+  CSPR_TRADE_MAINNET_SIGNER_PEM_PATH: z.string().default(''),
+  CSPR_TRADE_MAINNET_SIGNER_PEM_INLINE: z.string().default(''),
+  CSPR_TRADE_MAINNET_SIGNER_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('ed25519'),
+
   // Casper operator account hash (64 hex, no prefix). Used as the AllocationPolicy allowedDestinations
   // float fence on Casper — replaces the EVM agent-float address that Arc used.
   CASPER_OPERATOR_ACCOUNT_HASH: z
@@ -69,10 +80,20 @@ const EnvSchema = z.object({
     .regex(/^[0-9a-fA-F]{64}$/)
     .or(z.literal(''))
     .default(''),
+  // Mainnet-slot operator account the mainnet treasury gateway reads on-chain balances from (and the
+  // mainnet float-destination fence). Empty = mainnet treasury not configured (the mainnet toggle's
+  // /v1/treasury/* calls 503 honestly). Distinct account from testnet — real mainnet funds.
+  CASPER_MAINNET_OPERATOR_ACCOUNT_HASH: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/)
+    .or(z.literal(''))
+    .default(''),
   CSPR_TRADE_MAX_SLIPPAGE_BPS: z.coerce.number().int().min(0).max(10_000).default(100),
   CSPR_TRADE_ALLOWED_RISK_LABELS: z.string().min(1).default('low,medium'),
-  // Live CSPR.trade MCP integration. Defaults empty (UnavailableCsprTradeClient). Set to
-  // https://mcp.cspr.trade/mcp to enable real DEX quotes + testnet swap execution.
+  // TESTNET trade venue. Defaults empty (UnavailableCsprTradeClient). Must be the SELF-HOSTED
+  // testnet MCP (Casper-AGOPS.TradeMCP — @make-software/cspr-trade-mcp run against casper-test).
+  // NOT https://mcp.cspr.trade/mcp: that is the public MAINNET venue and trades real mainnet
+  // liquidity. Boot fails (assertTradeVenueMatchesNetwork) if this points at mcp.cspr.trade.
   CSPR_TRADE_MCP_URL: z.string().url().or(z.literal('')).default(''),
   // Casper public key (hex, 66 chars with 01/02 prefix) for the sender_public_key field in build_swap.
   // Typically the same public key as the Guard signer PEM. Required for LiveCsprTradeClient.
@@ -118,6 +139,16 @@ const EnvSchema = z.object({
     .regex(/^[0-9a-fA-F]{64}$/)
     .or(z.literal(''))
     .default(''),
+  /**
+   * MAINNET WCSPR package hash. A DIFFERENT contract from the testnet one — funding an agent on
+   * mainnet with the testnet hash would target a contract that does not exist there. Empty means
+   * mainnet agent funding stays disabled (the route reports it rather than crashing).
+   */
+  DEMO_CSPR_MAINNET_TOKEN_PACKAGE_HASH: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/)
+    .or(z.literal(''))
+    .default(''),
   DEMO_CSPR_TOKEN_NAME: z.string().min(1).default('CSPRX'),
   DEMO_CSPR_TOKEN_VERSION: z.string().min(1).default('1'),
 
@@ -135,6 +166,13 @@ const EnvSchema = z.object({
   // the limiter set a tiny AUTH_RATE_LIMIT via envOverride.
   AUTH_RATE_LIMIT: z.coerce.number().int().positive().default(10),
   AUTH_RATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+
+  // Milestone H (visual/prompt workflow builder) — prompt -> graph generation only. The LLM here
+  // PROPOSES config; this key is never read by any signer/deploy/vault path (see
+  // graph-builder/prompt-to-graph.ts header). Empty = the endpoint 503s honestly.
+  // Note: pro-tier Gemini models are quota-0 on free API keys — keep the default on a flash model.
+  GEMINI_API_KEY: z.string().default(''),
+  GEMINI_GRAPH_MODEL: z.string().min(1).default(DEFAULT_GRAPH_MODEL),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

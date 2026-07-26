@@ -83,6 +83,8 @@ export interface AllocationRecord {
   kind: 'depositFor' | 'topup' | 'teardown';
   enforcementTimestamp: Date;
   settlementTimestamp: Date;
+  /** On-chain WCSPR funding tx hash (delegated-key agents only); rendered as an explorer link. */
+  fundTxHash?: string | undefined;
 }
 
 /**
@@ -158,9 +160,9 @@ export async function recordAllocation(pool: pg.Pool, record: AllocationRecord):
     await client.query(
       `INSERT INTO allocation_events
          (allocation_id, kind, account, direction, amount, agent_id, org_id,
-          enforcement_timestamp, settlement_timestamp)
-       VALUES ($1, $2, $8, 'debit',  $3, $4, $5, $6, $7),
-              ($1, $2, $9, 'credit', $3, $4, $5, $6, $7)`,
+          enforcement_timestamp, settlement_timestamp, fund_tx_hash)
+       VALUES ($1, $2, $8, 'debit',  $3, $4, $5, $6, $7, $10),
+              ($1, $2, $9, 'credit', $3, $4, $5, $6, $7, $10)`,
       [
         record.allocationId,
         record.kind,
@@ -171,6 +173,7 @@ export async function recordAllocation(pool: pg.Pool, record: AllocationRecord):
         record.settlementTimestamp,
         debitAccount,
         creditAccount,
+        record.fundTxHash ?? null,
       ],
     );
     await client.query('COMMIT');

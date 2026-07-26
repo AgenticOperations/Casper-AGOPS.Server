@@ -87,6 +87,9 @@ export async function confirmDeposit(
     kind: (rec.kind ?? 'depositFor') as 'depositFor' | 'topup' | 'teardown',
     enforcementTimestamp: new Date(Number(rec.submittedAt ?? now) * 1000),
     settlementTimestamp: new Date(now * 1000),
+    // On-chain WCSPR funding tx (delegated-key agents; written to the Redis allocation record by
+    // depositFor). Persisted so the treasury history can render an explorer link.
+    ...(rec.fundTxHash ? { fundTxHash: rec.fundTxHash } : {}),
   });
   await redis.del(key);
   return 'CONFIRMED';

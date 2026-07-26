@@ -64,6 +64,12 @@ export type DenyReason =
   | 'org_suspended'
   /** A `depositFor` arrived inside the AllocationPolicy per-agent cooldown window — P3-B (engine-specs:128). */
   | 'allocation_cooldown'
+  /**
+   * The org's REAL deposited treasury balance cannot cover this agent-float allocation. Distinct from
+   * `allocation_exceeded`, which is the POLICY budget dial: this one means the money does not exist.
+   * An org that has never deposited into the parent treasury can fund no agent float at all.
+   */
+  | 'treasury_insufficient_funds'
   /** The vendor domain did not publish (or did not match) this payTo — E7 Domain Binding, BUG-17. */
   | 'destination_unverified';
 

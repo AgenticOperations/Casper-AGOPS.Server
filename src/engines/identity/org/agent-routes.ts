@@ -1,7 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authForRoute } from '../access/route-guard.js';
 import { registerAgent, renameAgent, retireAgent, rotateAgentKey } from '../../control/store.js';
+import { grantDelegatedKey } from '../delegation/delegated-keys-store.js';
+import { grantDelegatedKeyWithVault } from '../delegation/grant-delegated-key-with-vault.js';
 
 /**
  * Agent lifecycle (admin+). Wires the existing control/store.registerAgent (until now only reachable via
@@ -32,9 +35,25 @@ export function registerAgentLifecycleRoutes(app: FastifyInstance): void {
       name: parsed.data.name,
       ...(parsed.data.team_id ? { teamId: parsed.data.team_id } : {}),
     });
+    // Half-1: auto-grant the proxy-side delegated key when a vault is wired in. The try/catch is
+    // REQUIRED — a vault blip must NOT fail agent creation; the key can be granted later (Task 4).
+    // Absent vault → agent stays custodial, response omits delegated_public_key (unchanged behavior).
+    let delegatedPublicKey: string | undefined;
+    if (app.deps.vault) {
+      try {
+        const granted = await grantDelegatedKeyWithVault(
+          { pool, vault: app.deps.vault, grantDelegatedKey },
+          { id: `dk_${randomUUID()}`, agentId: agent.id },
+        );
+        delegatedPublicKey = granted.publicKey;
+      } catch (err) {
+        app.log.error({ err, agentId: agent.id }, 'delegated-key auto-grant failed; agent stays custodial');
+      }
+    }
     return reply.code(201).send({
       agent: { id: agent.id, name: agent.name, org_id: agent.orgId, status: agent.status },
       api_key: apiKey.token, // shown ONCE
+      ...(delegatedPublicKey ? { delegated_public_key: delegatedPublicKey } : {}),
     });
   });
 

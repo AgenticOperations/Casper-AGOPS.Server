@@ -3,6 +3,8 @@ import type pg from 'pg';
 import type { Redis } from 'ioredis';
 import { releaseHold, reserveHoldWithinPolicy, windowSum, snapshotWindows } from '../ledger/window.js';
 import { keys } from '../../redis/keyspace.js';
+import { isAgentSuspended } from '../control/kill-switch.js';
+import { verifyMinReceivedWithinSlippage } from './quote-verification.js';
 import type {
   CasperGuardActionKind,
   CasperGuardIntent,
@@ -11,6 +13,7 @@ import type {
 import {
   createCasperGuardDecision,
   createCasperGuardDecisionAndHold,
+  listCasperGuardDecisionsForRevoke,
   markCasperGuardDecisionSigned,
   markCasperGuardDecisionTerminal,
   readCasperGuardDecision,
@@ -23,12 +26,19 @@ import { casperGuardAssetRef, casperGuardIntentPrimaryAsset } from './types.js';
 export type CasperGuardDenyReason =
   | 'per_transaction_max_exceeded'
   | 'spend_cap_exceeded'
+  /**
+   * The agent does not hold enough confirmed float to cover this payment. Distinct from
+   * `spend_cap_exceeded`, which is the POLICY dial: this one means the money is not there. Raising the
+   * cap will not fix it — the agent's float must be funded.
+   */
+  | 'insufficient_float'
   | 'action_not_allowed'
   | 'network_not_allowed'
   | 'service_not_allowed'
   | 'service_scope_destination_mismatch'
   | 'velocity_exceeded'
   | 'org_suspended'
+  | 'agent_suspended'
   | 'trade_risk_exceeded'
   | 'idempotency_in_progress'
   | 'idempotency_conflict'
@@ -71,6 +81,7 @@ export interface CasperGuardSigner {
   sign(input: {
     decisionId: string;
     intent: CasperGuardIntent;
+    agentId?: string;
   }): Promise<{
     signedHeaderHash: string;
     headers?: Record<string, string>;
@@ -79,10 +90,17 @@ export interface CasperGuardSigner {
   }>;
 }
 
+/** D-5⑤/E.2: optional live-quote lookup so a swap's min-received is checked against the market,
+ * not just the intent's self-reported slippageBps. Absent = today's behavior (self-report only). */
+export interface CasperGuardTradeQuoter {
+  quoteAmountOut(input: { fromAsset: string; toAsset: string; amount: string }): Promise<bigint>;
+}
+
 export interface CasperGuardPolicyDeps {
   pool: pg.Pool;
   redis: Redis;
   signer: CasperGuardSigner;
+  tradeQuoter?: CasperGuardTradeQuoter;
 }
 
 export interface CasperGuardReleaseDeps {
@@ -143,11 +161,18 @@ export async function authorizeCasperGuardIntent(
     });
     if (existing) return authorizeResultFromExisting(existing, params);
 
-    const decision = await evaluateCasperGuardPolicy(deps.redis, params);
+    const decision = await evaluateCasperGuardPolicy(deps.redis, params, deps.tradeQuoter);
     if (!decision.allow) {
       await persistDeny(deps.pool, params, decision.reason);
       return { outcome: 'DENY', decisionId: params.decisionId, reason: decision.reason };
     }
+
+    // Float solvency applies to rails that move the AGENT's own money: an x402 service payment and a
+    // DEX swap both draw down agent float, so the agent must actually hold it. `casper-deploy` is
+    // excluded — it is gas paid by the operator account, not from agent float, so gating it on float
+    // would deny deploys for a correctly-funded agent.
+    const enforceSolvency =
+      params.intent.kind === 'x402-payment' || params.intent.kind === 'cspr-trade';
 
     const reserve = await reserveHoldWithinPolicy(deps.redis, {
       agentId: params.agentId,
@@ -156,7 +181,18 @@ export async function authorizeCasperGuardIntent(
       enforcementTs: params.now,
       spendCap: BigInt(params.policy.spendCap),
       velocityLimitPerHour: params.policy.velocityLimitPerHour,
+      enforceSolvency,
     });
+    if (reserve === 'insufficient_float') {
+      await persistDeny(deps.pool, params, 'insufficient_float');
+      const detail = await buildInsufficientFloatDetail(deps.redis, params);
+      return {
+        outcome: 'DENY',
+        decisionId: params.decisionId,
+        reason: 'insufficient_float',
+        ...(detail ? { detail } : {}),
+      };
+    }
     if (reserve === 'cap_exceeded' || reserve === 'velocity_exceeded') {
       const reason = reserve === 'cap_exceeded' ? 'spend_cap_exceeded' : 'velocity_exceeded';
       await persistDeny(deps.pool, params, reason);
@@ -195,6 +231,7 @@ export async function authorizeCasperGuardIntent(
           assetKind: asset.kind,
           assetRef: casperGuardAssetRef(asset),
           status: 'RESERVED',
+          network: params.intent.network,
         },
       );
     } catch (err) {
@@ -215,9 +252,15 @@ export async function authorizeCasperGuardIntent(
         return { outcome: 'DENY', decisionId: params.decisionId, reason: 'org_suspended' };
       }
 
+      if (await isAgentSuspended(deps.pool, { agentId: params.agentId, orgId: params.orgId })) {
+        await failReservedDecision(deps, params);
+        return { outcome: 'DENY', decisionId: params.decisionId, reason: 'agent_suspended' };
+      }
+
       const signed = await deps.signer.sign({
         decisionId: params.decisionId,
         intent: params.intent,
+        agentId: params.agentId,
       });
       const signedMarked = await markCasperGuardDecisionSigned(deps.pool, {
         decisionId: params.decisionId,
@@ -282,6 +325,7 @@ async function evaluateCasperGuardPolicy(
     policy: CasperGuardPolicy;
     now: number;
   },
+  tradeQuoter?: CasperGuardTradeQuoter,
 ): Promise<{ allow: true } | { allow: false; reason: CasperGuardDenyReason }> {
   if ((await redis.exists(keys.denyAll(params.orgId))) === 1) {
     return { allow: false, reason: 'org_suspended' };
@@ -340,6 +384,22 @@ async function evaluateCasperGuardPolicy(
       !tradePolicy.allowedRiskLabels.includes(params.intent.riskLabel)
     ) {
       return { allow: false, reason: 'trade_risk_exceeded' };
+    }
+
+    if (tradeQuoter) {
+      const quotedAmountOut = await tradeQuoter.quoteAmountOut({
+        fromAsset: casperGuardAssetRef(params.intent.fromAsset),
+        toAsset: casperGuardAssetRef(params.intent.toAsset),
+        amount: params.intent.amount,
+      });
+      const verified = verifyMinReceivedWithinSlippage({
+        quotedAmountOut,
+        maxSlippageBps: tradePolicy.maxSlippageBps,
+        intentMinReceived: BigInt(params.intent.minReceived),
+      });
+      if (!verified.ok) {
+        return { allow: false, reason: 'trade_risk_exceeded' };
+      }
     }
   }
 
@@ -513,8 +573,32 @@ function idempotencyFingerprint(params: {
   );
 }
 
+export interface RevokeAgentInFlightResult {
+  abortedDecisionIds: string[];
+  committedDecisionIds: string[];
+}
+
+/**
+ * D-2⑤ honest hard-stop for in-flight decisions on revoke: abort every decision not yet SIGNED
+ * (release its hold, mark FAILED_TERMINAL); leave SIGNED/BROADCASTING/EXPIRY_CHECK/SETTLED
+ * decisions alone to settle. Returns both sets so the caller can record "revoked mid-flight, N
+ * committed" in the audit trail.
+ */
+export async function revokeAgentInFlight(
+  deps: Pick<CasperGuardPolicyDeps, 'pool' | 'redis'>,
+  params: { agentId: string; orgId: string },
+): Promise<RevokeAgentInFlightResult> {
+  const { reserved, committed } = await listCasperGuardDecisionsForRevoke(deps.pool, params);
+
+  for (const decisionId of reserved) {
+    await failReservedDecision(deps, { agentId: params.agentId, decisionId });
+  }
+
+  return { abortedDecisionIds: reserved, committedDecisionIds: committed };
+}
+
 async function failReservedDecision(
-  deps: CasperGuardPolicyDeps,
+  deps: Pick<CasperGuardPolicyDeps, 'pool' | 'redis'>,
   params: { agentId: string; decisionId: string },
 ): Promise<void> {
   const transitioned = await markCasperGuardDecisionTerminal(deps.pool, {
@@ -552,6 +636,34 @@ async function buildDenyDetail(
       return `Velocity limit is ${limit} payments per hour. ${motesToCspr(usedThisHour)} CSPR already spent this hour — limit reached.`;
     }
     return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Human-readable detail for an insufficient_float denial. Names the remedy — fund the agent's float —
+ * because the obvious reflex (raise the spend cap) cannot fix a balance problem.
+ */
+async function buildInsufficientFloatDetail(
+  redis: Redis,
+  params: { agentId: string; intent: CasperGuardIntent },
+): Promise<string | null> {
+  try {
+    const [floatConfirmedRaw, consumedRaw, reservedRaw] = await Promise.all([
+      redis.get(keys.floatConfirmed(params.agentId)),
+      redis.get(keys.consumed(params.agentId)),
+      redis.get(keys.reserved(params.agentId)),
+    ]);
+    const floatConfirmed = BigInt(floatConfirmedRaw ?? '0');
+    const drawn = BigInt(consumedRaw ?? '0') + BigInt(reservedRaw ?? '0');
+    const spendable = floatConfirmed > drawn ? floatConfirmed - drawn : 0n;
+    const requested = BigInt(params.intent.amount);
+    const motesToCspr = (m: bigint) => (Number(m) / 1_000_000_000).toFixed(4);
+    if (floatConfirmed === 0n) {
+      return `This agent holds no confirmed float. Requested ${motesToCspr(requested)} CSPR. Fund the agent's float from the org treasury before it can pay.`;
+    }
+    return `Spendable float is ${motesToCspr(spendable)} CSPR (confirmed ${motesToCspr(floatConfirmed)} CSPR minus ${motesToCspr(drawn)} CSPR already spent or held). Requested ${motesToCspr(requested)} CSPR. Top up the agent's float.`;
   } catch {
     return null;
   }

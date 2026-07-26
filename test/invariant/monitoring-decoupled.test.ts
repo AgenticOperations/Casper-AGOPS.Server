@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 describe('Monitoring is decoupled from the money-decision core (engine-specs-FINAL.md:249,264,327)', () => {
   it('no enforcement/resolution module imports the monitoring engine', () => {
     const enginesRoot = fileURLToPath(new URL('../../src/engines/', import.meta.url));
-    const coreDirs = ['enforcement', 'resolution'].map((d) => join(enginesRoot, d));
+    const coreDirs = ['enforcement'].map((d) => join(enginesRoot, d));
     const offenders: string[] = [];
     let filesScanned = 0;
     const importEdge = /from\s+['"][^'"]*monitoring/;

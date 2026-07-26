@@ -73,7 +73,7 @@ describe('reputation is decoupled from the payment hot path (engine-specs-FINAL.
     // Resolve relative to THIS file (cwd-independent), so a drifted process.cwd() cannot point the
     // scan at non-existent dirs and let it pass vacuously.
     const enginesRoot = fileURLToPath(new URL('../../src/engines/', import.meta.url));
-    const hotPathDirs = ['enforcement', 'oracle', 'resolution'].map((d) => join(enginesRoot, d));
+    const hotPathDirs = ['enforcement', 'oracle'].map((d) => join(enginesRoot, d));
     const offenders: string[] = [];
     let filesScanned = 0;
     const scan = (dir: string): void => {

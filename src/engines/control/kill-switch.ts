@@ -47,3 +47,16 @@ export async function reinstateAgent(
   ]);
   return (res.rowCount ?? 0) > 0;
 }
+
+// Tier-2 read gate for the casper-guard (live) authorize path. Tenant-fenced same as suspendAgent:
+// the SELECT matches on (id, org_id), so a cross-org id or an unknown id both read as not-suspended.
+export async function isAgentSuspended(
+  pool: pg.Pool,
+  p: { agentId: string; orgId: string },
+): Promise<boolean> {
+  const res = await pool.query<{ status: string }>(
+    `SELECT status FROM agents WHERE id = $1 AND org_id = $2`,
+    [p.agentId, p.orgId],
+  );
+  return res.rows[0]?.status === 'suspended';
+}

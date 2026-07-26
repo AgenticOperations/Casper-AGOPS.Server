@@ -106,4 +106,176 @@ describe('schema migrations', () => {
     );
     expect(triggers.rowCount).toBe(0);
   });
+
+  it('applies 0013_network_scoping: holds default to testnet and reject unknown networks', async ({
+    skip,
+  }) => {
+    if (!dockerAvailable || !pool) return skip();
+    await runMigrations(pool); // idempotent: ensure 0013 is applied
+
+    const applied = await pool.query<{ id: string }>('SELECT id FROM schema_migrations');
+    expect(applied.rows.map((r) => r.id)).toContain('0013_network_scoping');
+
+    await pool.query(
+      `INSERT INTO orgs (id, name, admin_key_hash) VALUES ('org_net_test', 'Network Test Org', 'hash_net')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    await pool.query(
+      `INSERT INTO agents (id, org_id, api_key_hash) VALUES ('agt_net_test', 'org_net_test', 'hash_net')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    await pool.query(
+      `INSERT INTO casper_guard_decisions
+         (decision_id, idempotency_key, org_id, agent_id, action_kind, network, resource_id,
+          amount, asset_kind, asset_ref, status, outcome, policy_ref, intent_json)
+       VALUES
+         ('cgd_net_test', 'idem_net_test', 'org_net_test', 'agt_net_test', 'casper-deploy',
+          'casper:casper-test', 'res_net_test', 100, 'native', 'CSPR', 'RESERVED', 'ALLOW',
+          'policy_net_test', '{}'::jsonb)
+       ON CONFLICT (org_id, idempotency_key) DO NOTHING`,
+    );
+
+    // Insert a hold WITHOUT specifying network — must default to testnet.
+    await pool.query(
+      `INSERT INTO casper_guard_holds
+         (hold_id, decision_id, org_id, agent_id, amount, asset_kind, asset_ref, status)
+       VALUES ('hold_net_test', 'cgd_net_test', 'org_net_test', 'agt_net_test', 100, 'native', 'CSPR', 'RESERVED')
+       ON CONFLICT (hold_id) DO NOTHING`,
+    );
+    const hold = await pool.query<{ network: string }>(
+      `SELECT network FROM casper_guard_holds WHERE hold_id = 'hold_net_test'`,
+    );
+    expect(hold.rows[0]?.network).toBe('casper:casper-test');
+
+    // A bogus network value must be rejected by the CHECK constraint.
+    await expect(
+      pool.query(
+        `INSERT INTO casper_guard_holds
+           (hold_id, decision_id, org_id, agent_id, amount, asset_kind, asset_ref, status, network)
+         VALUES ('hold_net_bogus', 'cgd_net_test', 'org_net_test', 'agt_net_test', 100, 'native', 'CSPR', 'RESERVED', 'casper:bogus')`,
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('applies 0014_delegated_keys: enforces a single ACTIVE key per agent', async ({ skip }) => {
+    if (!dockerAvailable || !pool) return skip();
+    await runMigrations(pool); // idempotent: ensure 0014 is applied
+
+    const applied = await pool.query<{ id: string }>('SELECT id FROM schema_migrations');
+    expect(applied.rows.map((r) => r.id)).toContain('0014_delegated_keys');
+
+    await pool.query(
+      `INSERT INTO orgs (id, name, admin_key_hash) VALUES ('org_dk_test', 'Delegated Key Test Org', 'hash_dk')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    await pool.query(
+      `INSERT INTO agents (id, org_id, api_key_hash) VALUES ('agt_dk_test', 'org_dk_test', 'hash_dk')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+
+    await pool.query(
+      `INSERT INTO delegated_keys (id, agent_id, public_key) VALUES ('dk_1', 'agt_dk_test', 'pub_1')`,
+    );
+
+    // A second ACTIVE key for the same agent must violate the partial unique index.
+    await expect(
+      pool.query(
+        `INSERT INTO delegated_keys (id, agent_id, public_key) VALUES ('dk_2', 'agt_dk_test', 'pub_2')`,
+      ),
+    ).rejects.toThrow();
+
+    // Rotating (mark old ROTATED, insert new ACTIVE) leaves exactly one ACTIVE row.
+    await pool.query(`UPDATE delegated_keys SET status = 'ROTATED' WHERE id = 'dk_1'`);
+    await pool.query(
+      `INSERT INTO delegated_keys (id, agent_id, public_key) VALUES ('dk_2', 'agt_dk_test', 'pub_2')`,
+    );
+    const activeAfterRotate = await pool.query(
+      `SELECT id FROM delegated_keys WHERE agent_id = 'agt_dk_test' AND status = 'ACTIVE'`,
+    );
+    expect(activeAfterRotate.rows.map((r: { id: string }) => r.id)).toEqual(['dk_2']);
+
+    // Revoking leaves zero ACTIVE.
+    await pool.query(`UPDATE delegated_keys SET status = 'REVOKED', revoked_at = now() WHERE id = 'dk_2'`);
+    const activeAfterRevoke = await pool.query(
+      `SELECT id FROM delegated_keys WHERE agent_id = 'agt_dk_test' AND status = 'ACTIVE'`,
+    );
+    expect(activeAfterRevoke.rowCount).toBe(0);
+  });
+
+  it('applies 0015_agent_vault_keys: one upsertable row per agent, independent of delegated_keys', async ({
+    skip,
+  }) => {
+    if (!dockerAvailable || !pool) return skip();
+    await runMigrations(pool); // idempotent: ensure 0015 is applied
+
+    const applied = await pool.query<{ id: string }>('SELECT id FROM schema_migrations');
+    expect(applied.rows.map((r) => r.id)).toContain('0015_agent_vault_keys');
+
+    await pool.query(
+      `INSERT INTO orgs (id, name, admin_key_hash) VALUES ('org_vk_test', 'Vault Key Test Org', 'hash_vk')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    await pool.query(
+      `INSERT INTO agents (id, org_id, api_key_hash) VALUES ('agt_vk_test', 'org_vk_test', 'hash_vk')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+
+    // No delegated_keys row needed at all — agent_vault_keys is independent.
+    await pool.query(
+      `INSERT INTO agent_vault_keys (agent_id, encrypted_private_key) VALUES ('agt_vk_test', 'blob_v1')`,
+    );
+    const first = await pool.query<{ encrypted_private_key: string }>(
+      `SELECT encrypted_private_key FROM agent_vault_keys WHERE agent_id = 'agt_vk_test'`,
+    );
+    expect(first.rows[0]?.encrypted_private_key).toBe('blob_v1');
+
+    // Upsert on conflict (rotation writes a new blob for the same agent).
+    await pool.query(
+      `INSERT INTO agent_vault_keys (agent_id, encrypted_private_key) VALUES ('agt_vk_test', 'blob_v2')
+       ON CONFLICT (agent_id) DO UPDATE SET encrypted_private_key = EXCLUDED.encrypted_private_key`,
+    );
+    const second = await pool.query<{ encrypted_private_key: string }>(
+      `SELECT encrypted_private_key FROM agent_vault_keys WHERE agent_id = 'agt_vk_test'`,
+    );
+    expect(second.rows).toHaveLength(1);
+    expect(second.rows[0]?.encrypted_private_key).toBe('blob_v2');
+  });
+
+  it('applies 0016_delegated_key_grant_state: grant_state defaults to pending and rejects bogus values', async ({
+    skip,
+  }) => {
+    if (!dockerAvailable || !pool) return skip();
+    await runMigrations(pool); // idempotent: ensure 0016 is applied
+
+    const applied = await pool.query<{ id: string }>('SELECT id FROM schema_migrations');
+    expect(applied.rows.map((r) => r.id)).toContain('0016_delegated_key_grant_state');
+
+    await pool.query(
+      `INSERT INTO orgs (id, name, admin_key_hash) VALUES ('org_gs_test', 'Grant State Test Org', 'hash_gs')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    await pool.query(
+      `INSERT INTO agents (id, org_id, api_key_hash) VALUES ('agt_gs_test', 'org_gs_test', 'hash_gs')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+
+    // Inserting WITHOUT setting grant_state must default to 'pending' (existing keys are not yet
+    // on-chain-confirmed — Half-2 has not run).
+    await pool.query(
+      `INSERT INTO delegated_keys (id, agent_id, public_key) VALUES ('dk_gs_1', 'agt_gs_test', 'pub_gs_1')`,
+    );
+    const row = await pool.query<{ grant_state: string; grant_deploy_hash: string | null }>(
+      `SELECT grant_state, grant_deploy_hash FROM delegated_keys WHERE id = 'dk_gs_1'`,
+    );
+    expect(row.rows[0]?.grant_state).toBe('pending');
+    expect(row.rows[0]?.grant_deploy_hash).toBeNull();
+
+    // A bogus grant_state value must be rejected by the CHECK constraint.
+    await expect(
+      pool.query(
+        `INSERT INTO delegated_keys (id, agent_id, public_key, status, grant_state)
+         VALUES ('dk_gs_bogus', 'agt_gs_test', 'pub_gs_bogus', 'ROTATED', 'bogus')`,
+      ),
+    ).rejects.toThrow();
+  });
 });

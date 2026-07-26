@@ -57,6 +57,7 @@ describe('AgentOps persistence', () => {
       assetKind: 'cep18',
       assetRef: 'a'.repeat(64),
       status: 'RESERVED',
+      network: intent.network,
     });
     await appendCasperGuardReconciliationAttempt(stores.pool, {
       decisionId: 'cgd_test_1',
@@ -64,6 +65,7 @@ describe('AgentOps persistence', () => {
       source: 'facilitator',
       status: 'pending',
       evidence: { facilitator: 'local', payment: 'not-yet-settled' },
+      network: intent.network,
     });
     await appendCasperGuardAuditAnchor(stores.pool, {
       anchorId: 'cga_test_1',
@@ -72,6 +74,7 @@ describe('AgentOps persistence', () => {
       decisionHash: 'sha256:decision',
       status: 'submitted',
       txHash: 'deploy-hash-1',
+      network: intent.network,
     });
 
     const persisted = await readCasperGuardDecision(stores.pool, 'cgd_test_1');
@@ -107,6 +110,52 @@ describe('AgentOps persistence', () => {
           txHash: 'deploy-hash-1',
         },
       ],
+    });
+  });
+
+  it('stamps the hold with the decision intent network (mainnet)', async ({ skip }) => {
+    if (!stores) return skip();
+    const { agentId, orgId } = await seedAgent(stores.pool, stores.redis, 100);
+    const intent = normalizeCasperGuardIntent({
+      kind: 'x402-payment',
+      network: 'casper:casper',
+      resource_id: 'svc:casper-paid-api',
+      amount: '10',
+      asset: { kind: 'cep18', package_hash: 'a'.repeat(64), name: 'Test CEP18', version: '1' },
+      pay_to: `00${'b'.repeat(64)}`,
+      max_timeout_seconds: 900,
+      raw_requirement_hash: 'sha256:x402-requirements-mainnet',
+    });
+
+    await createCasperGuardDecision(stores.pool, {
+      decisionId: 'cgd_test_mainnet_1',
+      idempotencyKey: 'idem_test_mainnet_1',
+      orgId,
+      agentId,
+      intent,
+      status: 'SIGNED',
+      outcome: 'ALLOW',
+      policyRef: 'policy_test@v1',
+      signerKind: 'local-mainnet',
+      signedHeaderHash: 'sha256:payment-signature-mainnet',
+    });
+    await createCasperGuardHold(stores.pool, {
+      holdId: 'cgh_test_mainnet_1',
+      decisionId: 'cgd_test_mainnet_1',
+      orgId,
+      agentId,
+      amount: '10',
+      assetKind: 'cep18',
+      assetRef: 'a'.repeat(64),
+      status: 'RESERVED',
+      network: intent.network,
+    });
+
+    const persisted = await readCasperGuardDecision(stores.pool, 'cgd_test_mainnet_1');
+    expect(persisted?.network).toBe('casper:casper');
+    expect(persisted?.hold).toMatchObject({
+      holdId: 'cgh_test_mainnet_1',
+      network: 'casper:casper',
     });
   });
 

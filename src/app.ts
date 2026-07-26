@@ -4,21 +4,20 @@ import type { Redis } from 'ioredis';
 import type { Env } from './config/env.js';
 import { pingPg } from './db/client.js';
 import { pingRedis } from './redis/client.js';
-import type { KmsSigner } from './lib/kms/signer.js';
-import type { KnownTokenRegistry, TokenDomainSource } from './lib/eip712/domain.js';
-import type { DomainRegistry } from './engines/identity/domain-binding.js';
-import type { GatewayClient } from './lib/circle/gateway.js';
-import { registerAuthorizeRoute } from './engines/oracle/authorize.js';
+import type { CasperTreasuryClient } from './lib/casper/treasury-client.js';
+import type { AgentFundingDeps } from './engines/custody/agent-funding.js';
 import { registerMonitoringRoutes } from './engines/monitoring/routes.js';
 import { registerControlRoutes } from './engines/control/routes.js';
 import { registerTreasuryRoutes } from './engines/control/treasury-routes.js';
 import { registerPolicyRoutes } from './engines/control/policy-routes.js';
+import { registerGraphBuilderRoutes } from './engines/control/graph-builder/routes.js';
 import { registerReportsRoutes } from './engines/reports/routes.js';
 import { registerAuthRoutes } from './engines/identity/account/auth-routes.js';
 import { registerMeRoutes } from './engines/identity/account/me-routes.js';
 import { registerOrgRoutes } from './engines/identity/org/org-routes.js';
 import { registerMembersRoutes } from './engines/identity/org/members-routes.js';
 import { registerAgentLifecycleRoutes } from './engines/identity/org/agent-routes.js';
+import { registerDelegationRoutes } from './engines/identity/delegation/delegation-routes.js';
 import { registerApiKeyRoutes } from './engines/identity/access/api-key-routes.js';
 import { registerEmailRoutes } from './engines/identity/account/email-routes.js';
 import { registerOAuthRoutes } from './engines/identity/oauth/oauth-routes.js';
@@ -34,28 +33,22 @@ import {
   type CasperGuardDeps,
 } from './engines/casper-guard/routes.js';
 import { registerCasperGuardMcpRoute } from './engines/casper-guard/mcp.js';
-
-/**
- * Hot-path (authorize) wiring: the signer + on-chain read seams the `POST /v1/payment/authorize`
- * route needs to sign and resolve EIP-712 domains. Absent until those are configured (the viem-backed
- * implementations land in L8); without it the route fails closed with 503 while health checks serve.
- */
-export interface HotPathDeps {
-  signer: KmsSigner;
-  tokenDomainSource: TokenDomainSource;
-  /** E7 recipient binding (BUG-17): the .well-known/agentops.json registry; network-backed in server.ts. */
-  domainRegistry: DomainRegistry;
-  chainId: number;
-  knownTokens?: KnownTokenRegistry;
-}
+import type { KeyVault } from './engines/custody/key-vault.js';
+import type { AssociatedKeyVerifier } from './engines/identity/delegation/verify-associated-key.js';
+import type { AssociatedKeyRevokeVerifier } from './engines/identity/delegation/verify-associated-key-revoke.js';
 
 export interface AppDeps {
   env: Env;
   pg: pg.Pool;
   redis: Redis;
-  hotPath?: HotPathDeps;
-  /** E5/E6 treasury surface (F2). Absent in unit/HTTP harness → treasury routes fail closed 503. Live Circle wired in server.ts at M9. */
-  gateway?: GatewayClient;
+  /** E5/E6 treasury surface (F2). Absent in unit/HTTP harness → treasury routes fail closed 503. Live Casper-native treasury client wired in server.ts. Mirrors the testnet slot of {@link gatewayByNetwork} for backwards-compat. */
+  gateway?: CasperTreasuryClient;
+  /**
+   * Per-network treasury gateways (network toggle). Keyed by scoped-network string; a network with no
+   * operator/RPC config is omitted so its slot 503s. Treasury routes select by the x-agentops-network
+   * header; absent → testnet. `gateway` above stays populated from the testnet slot for old call sites.
+   */
+  gatewayByNetwork?: Partial<Record<'casper:casper-test' | 'casper:casper', CasperTreasuryClient>>;
   /** P1 email seam. Optional — buildApp defaults a dev log transport; tests inject a capturing one. */
   email?: EmailTransport;
   /**
@@ -66,8 +59,40 @@ export interface AppDeps {
   googleOAuth?: GoogleClient;
   /** CasperHacks product surface. Absent means routes report explicit unconfigured status/fail closed. */
   casperGuard?: CasperGuardDeps;
+  /**
+   * Per-agent delegated-key vault. Present only when CASPER_GUARD_VAULT_MASTER_SECRET is set (wired
+   * in server.ts); absent → the delegated-key auto-grant on agent create is unavailable and agents
+   * stay custodial. Built ONCE in server.ts and shared with buildCasperGuardDeps to avoid two vaults.
+   */
+  vault?: KeyVault;
+  /**
+   * Task 5 grant-confirm seam: the on-chain verifier that proves the master-signed grant deploy
+   * executed AND the agent key is associated at weight 1. Absent → the confirm route builds the live
+   * RPC verifier. Tests inject a stub so they do NO network I/O.
+   */
+  associatedKeyVerifier?: AssociatedKeyVerifier;
+  /**
+   * Revoke-confirm seam: the on-chain verifier that proves the master-signed REVOKE deploy executed
+   * AND the agent key is ABSENT from the master's associated_keys. Absent → the confirm route builds
+   * the live RPC verifier. Tests inject a stub so they do NO network I/O.
+   */
+  associatedKeyRevokeVerifier?: AssociatedKeyRevokeVerifier;
   /** Optional log destination; tests inject a capturing stream to assert redaction. */
   logStream?: { write(msg: string): void };
+  /**
+   * JIT on-chain agent-funding deps (WCSPR mirror of the reserved float into the agent's own account).
+   * Present only when fully configured (WCSPR pkg + operator + RPC), wired in server.ts. Absent in the
+   * unit/HTTP harness → float provisioning runs today's path verbatim (additive fence).
+   */
+  agentFunding?: AgentFundingDeps;
+  /**
+   * Per-network funding slots. The treasury route selects by the REQUEST's network so a mainnet
+   * top-up is signed for mainnet. `agentFunding` above remains the testnet slot for existing
+   * call sites and test harnesses that inject a single instance.
+   */
+  agentFundingByNetwork?: Partial<
+    Record<'casper:casper-test' | 'casper:casper', AgentFundingDeps | undefined>
+  >;
 }
 
 /**
@@ -136,18 +161,6 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     });
   });
 
-  // Honest mode reporting (no fakes): which integration transports the running process actually selected.
-  // Public and secret-free by construction — it derives a MODE label from credential presence only, and
-  // mirrors the gates wired at boot (server.ts Circle transport, hotpath.ts viem live read). 'live' =
-  // real provider; 'local' = the in-process stub / known-constant default. NEVER returns the key.
-  app.get('/v1/integrations/status', () => ({
-    circle:
-      deps.env.CIRCLE_GATEWAY_LIVE === 'true' && deps.env.CIRCLE_API_KEY !== '' ? 'live' : 'local',
-    arc: deps.env.ARC_LIVE === 'true' ? 'live' : 'local',
-  }));
-
-  // E9 Oracle — the agent-egress authorize surface.
-  registerAuthorizeRoute(app);
   // E8 Monitoring — read-side decision feed + the P1-actuated graded brakes (off the hot path).
   registerMonitoringRoutes(app);
   // E1 Control — Group A read surface (org summary). Off the hot path; admin-key authed.
@@ -156,6 +169,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerTreasuryRoutes(app);
   // E1/Control — Policy read/write surface (A1: GET effective policy; A2/A3 added in later tasks).
   registerPolicyRoutes(app);
+  // Milestone H (visual builder) — prompt -> validated config graph. Proposes config only:
+  // no signer/deploy/vault path. 503s when GEMINI_API_KEY is unset.
+  registerGraphBuilderRoutes(app);
   // E4/Ledger — Group C reports read surface (statements + immutable audit export). Off the hot path; admin-key authed.
   registerReportsRoutes(app);
   // P1 Identity — human self-serve auth (register/login/logout). Sessions are httpOnly cookies.
@@ -174,6 +190,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerOAuthRoutes(app);
   // P1 Identity — agent lifecycle (create/rename/retire/rotate-key, admin+, tenant-fenced). ag_ shown once.
   registerAgentLifecycleRoutes(app);
+  // Phase 2 SDK+proxy — trading flow attach + full delegated-key revoke (Milestones D, A+C).
+  registerDelegationRoutes(app);
   // CasperHacks — AgentOps policy/firewall/audit product surface.
   registerCasperGuardRoutes(app);
   registerCasperGuardMcpRoute(app);

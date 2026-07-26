@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { GatewayClient, type GatewayTransport } from '../../src/lib/circle/gateway.js';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import type { CasperTreasuryClient } from '../../src/lib/casper/treasury-client.js';
 import { depositFor, type ProvisionDeps } from '../../src/engines/provisioning/deposit.js';
 import { confirmDeposit } from '../../src/engines/provisioning/confirm.js';
 import { teardownAgent } from '../../src/engines/provisioning/teardown.js';
@@ -29,65 +29,57 @@ const NOW = 1_750_000_000;
 /** A Circle transport for teardown: deposit-for hands distinct op ids, reclaim-for is recorded, and the
  *  operation-finality read reports `complete` only for txRefs explicitly marked final. */
 function teardownGateway(): {
-  gateway: GatewayClient;
+  gateway: CasperTreasuryClient;
   markFinal: (txRef: string) => void;
   reclaims: Array<{ orgId: string; agentId: string; amount: string }>;
 } {
   const final = new Set<string>();
   const reclaims: Array<{ orgId: string; agentId: string; amount: string }> = [];
   let n = 0;
-  const transport: GatewayTransport = {
-    request<T>(req: { method: 'GET' | 'POST'; path: string; body?: unknown }): Promise<T> {
-      if (req.path === '/v1/gateway/deposit-for') {
-        n += 1;
-        return Promise.resolve({ id: `gw_tx_${n}` } as T);
-      }
-      if (req.path === '/v1/gateway/reclaim-for') {
-        const b = req.body as { orgId: string; agentId: string; amount: string };
-        reclaims.push({ orgId: b.orgId, agentId: b.agentId, amount: b.amount });
-        return Promise.resolve({ id: `gw_reclaim_${reclaims.length}` } as T);
-      }
-      if (req.path.startsWith('/v1/gateway/operations/')) {
-        const id = req.path.slice('/v1/gateway/operations/'.length);
-        return Promise.resolve({ status: final.has(id) ? 'complete' : 'pending' } as T);
-      }
-      return Promise.reject(new Error(`unexpected path ${req.path}`));
-    },
+  const gateway: CasperTreasuryClient = {
+    getBalances: vi.fn(),
+    deposit: vi.fn(),
+    depositFor: vi.fn(async () => {
+      n += 1;
+      return { id: `gw_tx_${n}` };
+    }),
+    reclaimFor: vi.fn(async (params: { orgId: string; agentId: string; amount: bigint }) => {
+      reclaims.push({ orgId: params.orgId, agentId: params.agentId, amount: params.amount.toString() });
+      return { id: `gw_reclaim_${reclaims.length}` };
+    }),
+    isFinal: vi.fn(async (txRef: string) => final.has(txRef)),
   };
-  return { gateway: new GatewayClient(transport), markFinal: (t: string) => { final.add(t); }, reclaims };
+  return { gateway, markFinal: (t: string) => { final.add(t); }, reclaims };
 }
 
 /** isFinal reports `complete` the FIRST time a given op is queried, then `pending` afterwards — simulating
  *  a finality read that flips between two reads. Teardown must STILL guarantee float_pending==0 (BUG-21);
  *  it must never trust an optimistic read and leave a deposit stranded PENDING. */
 function flipFinalGateway(): {
-  gateway: GatewayClient;
+  gateway: CasperTreasuryClient;
   reclaims: Array<{ orgId: string; agentId: string; amount: string }>;
 } {
   const seen = new Set<string>();
   const reclaims: Array<{ orgId: string; agentId: string; amount: string }> = [];
   let n = 0;
-  const transport: GatewayTransport = {
-    request<T>(req: { method: 'GET' | 'POST'; path: string; body?: unknown }): Promise<T> {
-      if (req.path === '/v1/gateway/deposit-for') {
-        n += 1;
-        return Promise.resolve({ id: `gw_tx_${n}` } as T);
-      }
-      if (req.path === '/v1/gateway/reclaim-for') {
-        const b = req.body as { orgId: string; agentId: string; amount: string };
-        reclaims.push({ orgId: b.orgId, agentId: b.agentId, amount: b.amount });
-        return Promise.resolve({ id: `gw_reclaim_${reclaims.length}` } as T);
-      }
-      if (req.path.startsWith('/v1/gateway/operations/')) {
-        const id = req.path.slice('/v1/gateway/operations/'.length);
-        const first = !seen.has(id);
-        seen.add(id);
-        return Promise.resolve({ status: first ? 'complete' : 'pending' } as T);
-      }
-      return Promise.reject(new Error(`unexpected path ${req.path}`));
-    },
+  const gateway: CasperTreasuryClient = {
+    getBalances: vi.fn(),
+    deposit: vi.fn(),
+    depositFor: vi.fn(async () => {
+      n += 1;
+      return { id: `gw_tx_${n}` };
+    }),
+    reclaimFor: vi.fn(async (params: { orgId: string; agentId: string; amount: bigint }) => {
+      reclaims.push({ orgId: params.orgId, agentId: params.agentId, amount: params.amount.toString() });
+      return { id: `gw_reclaim_${reclaims.length}` };
+    }),
+    isFinal: vi.fn(async (txRef: string) => {
+      const first = !seen.has(txRef);
+      seen.add(txRef);
+      return first;
+    }),
   };
-  return { gateway: new GatewayClient(transport), reclaims };
+  return { gateway, reclaims };
 }
 
 let stores: Stores | null = null;
@@ -108,6 +100,8 @@ describe('teardown sweep — no stranded float_pending, confirmed float reclaime
       agentFloatAddress: agentFloat.address,
       amount,
       policy: allocation,
+      // Org is funded well beyond these asks — this suite exercises the POLICY bounds, not solvency.
+      fundedTotal: usdc(1_000_000),
       kind: 'depositFor' as const,
       secondsSinceLastAllocation: null,
       now,
@@ -188,6 +182,8 @@ describe('teardown sweep — no stranded float_pending, confirmed float reclaime
       agentFloatAddress: agentFloat.address,
       amount: usdc(25),
       policy: allocation,
+      // Org is funded well beyond these asks — this suite exercises the POLICY bounds, not solvency.
+      fundedTotal: usdc(1_000_000),
       kind: 'depositFor',
       secondsSinceLastAllocation: null,
       now: NOW,
@@ -217,6 +213,8 @@ describe('teardown sweep — no stranded float_pending, confirmed float reclaime
       agentFloatAddress: agentFloat.address,
       amount: usdc(40),
       policy: allocation,
+      // Org is funded well beyond these asks — this suite exercises the POLICY bounds, not solvency.
+      fundedTotal: usdc(1_000_000),
       kind: 'depositFor',
       secondsSinceLastAllocation: null,
       now: NOW,

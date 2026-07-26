@@ -1,0 +1,48 @@
+{
+  "name": "@agops-labs/sdk",
+  "version": "0.2.0",
+  "description": "AgentOps SDK — REST + MCP client for the AgentOps (Casper-AGOPS) policy-firewall proxy. Authorize AI-agent payments and on-chain actions with enforced spend caps and on-chain audit anchoring.",
+  "keywords": [
+    "agentops",
+    "casper",
+    "ai-agents",
+    "x402",
+    "mcp",
+    "policy",
+    "web3",
+    "payments"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.6"
+  }
+}

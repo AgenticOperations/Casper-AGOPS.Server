@@ -1,5 +1,5 @@
 import {
-  CASPER_X402_TESTNET_NETWORK,
+  CASPER_X402_ALLOWED_NETWORKS,
   type CasperClientSigner,
   type CasperNetwork,
 } from './x402.js';
@@ -89,10 +89,10 @@ export class CasperSignerProvider {
       throw this.unavailableModeError();
     }
 
-    if (input.network !== CASPER_X402_TESTNET_NETWORK) {
+    if (!CASPER_X402_ALLOWED_NETWORKS.includes(input.network as never)) {
       throw new CasperSignerProviderError(
         'CASPER_SIGNER_NETWORK_NOT_ALLOWED',
-        `Local Casper signer is restricted to ${CASPER_X402_TESTNET_NETWORK}`,
+        `Local Casper signer is restricted to ${CASPER_X402_ALLOWED_NETWORKS.join(', ')}`,
       );
     }
 

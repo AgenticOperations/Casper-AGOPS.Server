@@ -45,6 +45,20 @@ interface CreateHeaderInput {
 }
 
 describe('AgentOps runtime config', () => {
+  it('defaults mainnet-slot env vars to empty string when unset', () => {
+    const env = loadEnv(BASE_ENV);
+    expect(env.CASPER_GUARD_MAINNET_SIGNER_PEM_PATH).toBe('');
+    expect(env.CASPER_GUARD_MAINNET_SIGNER_PEM_INLINE).toBe('');
+    expect(env.CASPER_GUARD_MAINNET_ODRA_PACKAGE_HASH).toBe('');
+    expect(env.CASPER_GUARD_MAINNET_ODRA_RPC_URL).toBe('');
+    expect(env.CASPER_GUARD_MAINNET_FACILITATOR_RPC_URL).toBe('');
+    expect(env.CASPER_GUARD_MAINNET_FACILITATOR_URL).toBe('');
+    expect(env.CSPR_TRADE_MAINNET_MCP_URL).toBe('');
+    expect(env.CSPR_TRADE_MAINNET_SENDER_PUBLIC_KEY).toBe('');
+    expect(env.CSPR_TRADE_MAINNET_SIGNER_PEM_PATH).toBe('');
+    expect(env.CSPR_TRADE_MAINNET_SIGNER_PEM_INLINE).toBe('');
+  });
+
   it('is honest by default: no signer, settlement blocked, Odra blocked', () => {
     const env = loadEnv(BASE_ENV);
     const deps = buildCasperGuardDeps(env);
@@ -136,6 +150,40 @@ describe('AgentOps runtime config', () => {
     expect(signed).toEqual({
       signedHeaderHash: `sha256:${createHash('sha256').update('payment-header-value').digest('hex')}`,
       headers: { [CASPER_X402_HEADER_NAME]: 'payment-header-value' },
+    });
+  });
+
+  it('forwards agentId to getClientSigner when the caller supplies one (B.4 — per-agent delegated signing seam)', async () => {
+    createHeaderSpy.mockResolvedValue({
+      headerName: CASPER_X402_HEADER_NAME,
+      headerValue: 'payment-header-value',
+      headers: { [CASPER_X402_HEADER_NAME]: 'payment-header-value' },
+      payload: { x402Version: 2 },
+    });
+    const getClientSignerSpy = vi.fn(() => Promise.resolve(clientSigner));
+    const provider: CasperClientSignerProvider = {
+      mode: 'local-testnet',
+      getClientSigner: getClientSignerSpy,
+    };
+    const signer = createCasperGuardRuntimeSigner(provider);
+
+    await signer.sign({
+      decisionId: 'cgd_test',
+      agentId: 'agt_delegated_1',
+      intent: {
+        kind: 'x402-payment',
+        network: 'casper:casper-test',
+        resourceId: 'svc:casper-paid-api',
+        amount: '12',
+        asset: { kind: 'cep18', packageHash: 'a'.repeat(64), name: 'Test CEP18', version: '1' },
+        destination: `00${'b'.repeat(64)}`,
+        maxTimeoutSeconds: 900,
+      },
+    });
+
+    expect(getClientSignerSpy).toHaveBeenCalledWith({
+      network: 'casper:casper-test',
+      agentId: 'agt_delegated_1',
     });
   });
 });

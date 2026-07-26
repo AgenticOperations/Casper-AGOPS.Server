@@ -8,6 +8,10 @@ dist/
 build/
 *.tsbuildinfo
 
+# Rust / Odra contract build output
+target/
+contracts/**/target/
+
 # Test / coverage
 coverage/
 .vitest/

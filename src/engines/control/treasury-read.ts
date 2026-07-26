@@ -1,10 +1,10 @@
 import type { Redis } from 'ioredis';
 import type pg from 'pg';
-import type { GatewayClient } from '../../lib/circle/gateway.js';
 import { keys } from '../../redis/keyspace.js';
 import { computeSpendable } from '../custody/balance.js';
+import type { CasperScopedNetwork } from '../casper-guard/network-header.js';
 
-export interface TreasuryReadDeps { redis: Redis; gateway: GatewayClient; }
+export interface TreasuryReadDeps { redis: Redis; pool: pg.Pool; }
 
 export interface TreasuryBalances {
   available: string;
@@ -15,21 +15,32 @@ export interface TreasuryBalances {
 }
 
 /**
- * Unified org balance (doc 05 §6.1): available (gateway), allocated = committed + reserved,
+ * Unified org balance (doc 05 §6.1): available, allocated = committed + reserved,
  * free = available − allocated (clamped ≥0). All base-unit strings.
  *
- * Defensive parse: GatewayBalance.available is typed bigint but the stub (and live Circle
- * JSON transport) returns a STRING over the wire. The typeof guard absorbs both cases so the
- * defensive boundary survives the M9 live-transport wiring without a code change.
+ * `available` is the sum of THIS org's credited deposits from the treasury_deposit_intents ledger —
+ * NOT the operator wallet's on-chain balance. The operator wallet is a single shared custodial account
+ * that pools every org's deposits, so its raw balance is a cross-tenant total and must never be shown
+ * as one org's balance. The per-org ledger is the tenant-isolated source of truth (each deposit-by-hash
+ * / verify-deposit credit writes a row keyed on org_id).
  */
-export async function getTreasuryBalances(deps: TreasuryReadDeps, orgId: string): Promise<TreasuryBalances> {
-  const { redis, gateway } = deps;
-  const [bal, committedRaw, reservedRaw] = await Promise.all([
-    gateway.getBalances(orgId),
+export async function getTreasuryBalances(
+  deps: TreasuryReadDeps,
+  orgId: string,
+  network: CasperScopedNetwork,
+): Promise<TreasuryBalances> {
+  const { redis, pool } = deps;
+  const [depositRes, committedRaw, reservedRaw] = await Promise.all([
+    pool.query<{ total: string | null }>(
+      `SELECT COALESCE(SUM(credited_amount), 0)::text AS total
+         FROM treasury_deposit_intents
+        WHERE org_id = $1 AND status = 'credited' AND network = $2`,
+      [orgId, network],
+    ),
     redis.get(keys.allocationCommitted(orgId)),
     redis.get(keys.allocationReserved(orgId)),
   ]);
-  const available = typeof bal.available === 'bigint' ? bal.available : BigInt(bal.available);
+  const available = BigInt(depositRes.rows[0]?.total ?? '0');
   const committed = BigInt(committedRaw ?? '0');
   const reserved = BigInt(reservedRaw ?? '0');
   const allocated = committed + reserved;
@@ -91,6 +102,8 @@ export interface TreasuryHistoryRow {
   amount: string;
   settlement_timestamp: string;
   recorded_at: string;
+  /** On-chain WCSPR funding tx hash (delegated-key agents); null when there was no on-chain funding. */
+  fund_tx_hash: string | null;
 }
 
 /**
@@ -104,11 +117,12 @@ interface AllocationEventRow {
   amount: string;
   settlement_timestamp: Date;
   recorded_at: Date;
+  fund_tx_hash: string | null;
 }
 
 export async function listTreasuryHistory(pool: pg.Pool, orgId: string, limit = 100): Promise<TreasuryHistoryRow[]> {
   const res = await pool.query<AllocationEventRow>(
-    `SELECT allocation_id, kind, agent_id, amount::text AS amount, settlement_timestamp, recorded_at
+    `SELECT allocation_id, kind, agent_id, amount::text AS amount, settlement_timestamp, recorded_at, fund_tx_hash
        FROM allocation_events
       WHERE org_id = $1 AND account = 'agent-float' AND direction = 'credit' AND kind IN ('depositFor','topup')
       ORDER BY recorded_at DESC
@@ -122,6 +136,7 @@ export async function listTreasuryHistory(pool: pg.Pool, orgId: string, limit = 
     amount: r.amount,
     settlement_timestamp: new Date(r.settlement_timestamp).toISOString(),
     recorded_at: new Date(r.recorded_at).toISOString(),
+    fund_tx_hash: r.fund_tx_hash,
   }));
 }
 

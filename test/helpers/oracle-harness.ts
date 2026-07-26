@@ -7,10 +7,8 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../../src/app.js';
 import { loadEnv } from '../../src/config/env.js';
 import { runMigrations } from '../../src/db/migrate.js';
-import type { GatewayClient } from '../../src/lib/circle/gateway.js';
+import type { CasperTreasuryClient } from '../../src/lib/casper/treasury-client.js';
 import { LocalKmsSigner } from '../../src/lib/kms/signer.js';
-import type { TokenDomainSource } from '../../src/lib/eip712/domain.js';
-import type { DomainRegistry } from '../../src/engines/identity/domain-binding.js';
 import {
   assignPolicy,
   createOrg,
@@ -18,6 +16,7 @@ import {
   registerAgent,
 } from '../../src/engines/control/store.js';
 import { recompileAgentPolicy } from '../../src/engines/control/publish.js';
+import { keys } from '../../src/redis/keyspace.js';
 import { bumpOrgEpoch } from '../../src/engines/control/epoch.js';
 import { issueAdminKey } from '../../src/lib/ids.js';
 import type { AllocationPolicy, SpendPolicy } from '../../src/contracts/index.js';
@@ -41,23 +40,6 @@ const treasury = privateKeyToAccount(
   '0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba',
 );
 export const signer = new LocalKmsSigner({ 'agent-float': agentFloat, 'treasury-allocation': treasury });
-
-// EIP-5267 seam stub: simulates the on-chain eip712Domain() read for the token (USDC version "2").
-export const tokenDomainSource: TokenDomainSource = {
-  readEip712Domain: ({ address }) =>
-    Promise.resolve({ name: 'USD Coin', version: '2', chainId: BigInt(CHAIN_ID), verifyingContract: address }),
-};
-
-// E7 domain-binding stub (BUG-17): the test vendor host publishes VENDOR; everything else is unverified.
-// requestContext.url host = 'api.weather.example', and raw402 pays VENDOR, so the hot-path ALLOW tests bind.
-export const domainRegistry: DomainRegistry = {
-  resolvePaymentAddress: (host) => Promise.resolve(host === 'api.weather.example' ? VENDOR : null),
-};
-
-/** Permissive binding stub: binds any host to `addr` — for tests not exercising the binding gate itself. */
-export const bindAnyTo = (addr: string): DomainRegistry => ({
-  resolvePaymentAddress: () => Promise.resolve(addr),
-});
 
 const TEST_ENV = {
   NODE_ENV: 'test',
@@ -119,7 +101,7 @@ export function buildOracleApp(
   pool: pg.Pool,
   redis: Redis,
   logStream?: { write(msg: string): void },
-  gateway?: GatewayClient,
+  gateway?: CasperTreasuryClient,
   envOverride?: Record<string, string>,
 ): FastifyInstance {
   const env = loadEnv({ ...TEST_ENV, ...(envOverride ?? {}) });
@@ -127,7 +109,6 @@ export function buildOracleApp(
     env,
     pg: pool,
     redis,
-    hotPath: { signer, tokenDomainSource, domainRegistry, chainId: CHAIN_ID },
     ...(logStream ? { logStream } : {}),
     ...(gateway ? { gateway } : {}),
   });
@@ -176,6 +157,13 @@ export async function seedAgent(
     // shared agent-float account, so a depositFor to it passes the fence; an external addr is denied.
     allowedDestinations: [agentFloat.address],
   };
+  // Seed CONFIRMED float so the agent is solvent by default. The spend path enforces
+  // `spendable = float_confirmed − consumed − reserved` inside reserve-with-policy.lua, so an agent
+  // with no float can authorize nothing — without this, every ALLOW case in every suite would deny
+  // with `insufficient_float`. Seeded generously so float is never the binding constraint; suites
+  // that test solvency itself set this key explicitly.
+  await redis.set(keys.floatConfirmed(agent.id), (1_000_000n * 1_000_000_000n).toString());
+
   const sp = await createPolicyVersion(pool, { orgId: org.id, class: 'spend', rules: spend });
   const ap = await createPolicyVersion(pool, { orgId: org.id, class: 'allocation', rules: allocation });
   await assignPolicy(pool, { orgId: org.id, scope: 'org', scopeId: org.id, policyId: sp.policyId, class: 'spend' });

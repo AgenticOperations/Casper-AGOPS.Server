@@ -22,7 +22,6 @@ export interface NativeCsprTransferSubmitter {
 // Runtime-only type for the casper-js-sdk pieces we call (transitive dep — no direct type import).
 type CasperSdk = {
   RpcClient: new (handler: unknown) => {
-    putDeploy(d: unknown): Promise<{ deployHash: { toHex(): string } }>;
     putTransaction(t: unknown): Promise<{ transactionHash: { toHex(): string } }>;
   };
   HttpHandler: new (endpoint: string) => unknown;
@@ -30,17 +29,13 @@ type CasperSdk = {
     fromPem(content: string, algorithm: number): { publicKey: unknown; sign(msg: Uint8Array): Uint8Array };
   };
   KeyAlgorithm: { ED25519: 1; SECP256K1: 2 };
-  DeployHeader: { default(): { chainName: string; account: unknown } };
-  ExecutableDeployItem: {
-    new(): { storedVersionedContractByHash?: unknown };
-    standardPayment(amount: string): unknown;
-  };
-  StoredVersionedContractByHash: new (hash: unknown, entryPoint: string, args: unknown) => unknown;
-  Args: new (map: Map<string, unknown>) => unknown;
+  Args: { fromMap(map: Record<string, unknown>): unknown };
   CLValue: { newCLString(val: string): unknown };
-  ContractHash: { fromJSON(value: string): unknown };
-  Deploy: { makeDeploy(header: unknown, payment: unknown, session: unknown): { sign(key: unknown): void } };
-  // Casper 2.0 Transaction API
+  // Casper 2.0 Transaction API — entry-point calls on a stored contract package.
+  ContractCallBuilder: new () => {
+    byPackageHash(hash: string): ContractCallBuilderChain;
+  };
+  // Casper 2.0 Transaction API — native transfers.
   NativeTransferBuilder: new () => {
     from(publicKey: unknown): unknown;
     targetAccountHash(accountHash: unknown): unknown;
@@ -51,6 +46,15 @@ type CasperSdk = {
     build(): { sign(privateKey: unknown): void; hash: { toHex(): string } };
   };
   AccountHash: { fromString(hex: string): unknown };
+};
+
+type ContractCallBuilderChain = {
+  entryPoint(name: string): ContractCallBuilderChain;
+  runtimeArgs(args: unknown): ContractCallBuilderChain;
+  from(publicKey: unknown): ContractCallBuilderChain;
+  chainName(name: string): ContractCallBuilderChain;
+  payment(amount: number): ContractCallBuilderChain;
+  build(): { sign(privateKey: unknown): void; hash: { toHex(): string } };
 };
 
 const importRuntime = (s: string): Promise<unknown> => import(/* @vite-ignore */ s) as Promise<unknown>;
@@ -82,31 +86,26 @@ export function createLiveCasperDeploySubmitter(cfg: {
         CASPER_KEY_ALGORITHM[cfg.algorithm] === 1 ? sdk.KeyAlgorithm.ED25519 : sdk.KeyAlgorithm.SECP256K1;
       const privateKey = sdk.PrivateKey.fromPem(pemContent, sdkAlgorithm);
 
-      const namedArgs = new sdk.Args(
-        new Map(Object.entries(args).map(([k, v]) => [k, sdk.CLValue.newCLString(v)])),
-      );
-      // ContractHash.fromJSON with bare 64-char hex (no "hash-" prefix): gives a proper
-      // ContractHash whose .hash.toBytes() works for deploy serialization AND whose toJSON()
-      // emits bare hex — the node rejects a "hash-"-prefixed value here as odd-length Base16.
-      const contractHash = sdk.ContractHash.fromJSON(packageHash);
-      const session = new sdk.ExecutableDeployItem();
-      session.storedVersionedContractByHash = new sdk.StoredVersionedContractByHash(
-        contractHash,
-        entryPoint,
-        namedArgs,
+      const namedArgs = sdk.Args.fromMap(
+        Object.fromEntries(Object.entries(args).map(([k, v]) => [k, sdk.CLValue.newCLString(v)])),
       );
 
-      const header = sdk.DeployHeader.default();
-      header.chainName = cfg.chainName ?? 'casper-test';
-      header.account = privateKey.publicKey;
-
-      const payment = sdk.ExecutableDeployItem.standardPayment('3000000000'); // 3 CSPR gas cap
-      const deploy = sdk.Deploy.makeDeploy(header, payment, session);
-      deploy.sign(privateKey);
+      // Casper 2.0 Transaction API (TransactionV1 / ContractCallBuilder). The prior implementation
+      // used the Casper 1.x Deploy/putDeploy path, which Casper 2.0 nodes accept but never execute
+      // or include in a block — anchor calls silently no-op while looking "confirmed".
+      const transaction = new sdk.ContractCallBuilder()
+        .byPackageHash(packageHash)
+        .entryPoint(entryPoint)
+        .runtimeArgs(namedArgs)
+        .from(privateKey.publicKey)
+        .chainName(cfg.chainName ?? 'casper-test')
+        .payment(3_000_000_000) // 3 CSPR gas cap
+        .build();
+      transaction.sign(privateKey);
 
       const client = new sdk.RpcClient(new sdk.HttpHandler(cfg.rpcUrl));
-      const result = await client.putDeploy(deploy);
-      return { txHash: result.deployHash.toHex() };
+      const result = await client.putTransaction(transaction);
+      return { txHash: result.transactionHash.toHex() };
     },
   };
 }

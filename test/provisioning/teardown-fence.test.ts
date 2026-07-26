@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { GatewayClient, type GatewayTransport } from '../../src/lib/circle/gateway.js';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import type { CasperTreasuryClient } from '../../src/lib/casper/treasury-client.js';
 import { type ProvisionDeps } from '../../src/engines/provisioning/deposit.js';
 import { teardownAgent } from '../../src/engines/provisioning/teardown.js';
 import { authenticateAgent } from '../../src/engines/oracle/auth.js';
@@ -40,20 +40,18 @@ describe('teardown fences NEW spends before reclaiming float (M8, teardown.ts:24
     // The transport records the agent's DB status AT THE MOMENT reclaim-for is invoked → proves the
     // suspend was ordered first.
     const statusAtReclaim: string[] = [];
-    const transport: GatewayTransport = {
-      request<T>(req: { method: 'GET' | 'POST'; path: string; body?: unknown }): Promise<T> {
-        if (req.path === '/v1/gateway/reclaim-for') {
-          return pool
-            .query<{ status: string }>('SELECT status FROM agents WHERE id = $1', [agentId])
-            .then((r) => {
-              statusAtReclaim.push(r.rows[0]?.status ?? 'missing');
-              return { id: `gw_reclaim_${statusAtReclaim.length}` } as T;
-            });
-        }
-        return Promise.reject(new Error(`unexpected path ${req.path}`));
-      },
+    const gateway: CasperTreasuryClient = {
+      getBalances: vi.fn(),
+      deposit: vi.fn(),
+      depositFor: vi.fn(),
+      reclaimFor: vi.fn(async () => {
+        const r = await pool.query<{ status: string }>('SELECT status FROM agents WHERE id = $1', [agentId]);
+        statusAtReclaim.push(r.rows[0]?.status ?? 'missing');
+        return { id: `gw_reclaim_${statusAtReclaim.length}` };
+      }),
+      isFinal: vi.fn(),
     };
-    const deps: ProvisionDeps = { pool, redis, gateway: new GatewayClient(transport) };
+    const deps: ProvisionDeps = { pool, redis, gateway };
 
     const result = await teardownAgent(deps, { orgId, agentId, now: NOW });
 

@@ -115,7 +115,7 @@ describe('Casper x402 wrapper', () => {
     } satisfies CasperX402PaymentRequirements;
 
     const invalidRequirements: Array<[string, CasperX402PaymentRequirements]> = [
-      ['wrong network', { ...base, network: 'casper:casper' }],
+      ['wrong network', { ...base, network: 'evm:sepolia' }],
       ['bad CEP-18 asset hash', { ...base, asset: 'not-a-package-hash' }],
       ['missing token metadata', { ...base, extra: { name: 'Test CEP18' } }],
       ['bad pay-to account', { ...base, payTo: 'not-a-casper-account' }],
@@ -176,9 +176,15 @@ describe('Casper x402 wrapper', () => {
     }
   });
 
+  it('allows both testnet and mainnet networks for the local signer (additive, D-0 mainnet deploy)', async () => {
+    const provider = generatedLocalProvider();
+    const mainnetSigner = await provider.getClientSigner({ network: 'casper:casper' });
+    expect(mainnetSigner.accountAddress()).toEqual(expect.any(String));
+  });
+
   it('fails closed with typed signer errors for unavailable signer modes', async () => {
     await expect(
-      generatedLocalProvider().getClientSigner({ network: 'casper:casper' }),
+      generatedLocalProvider().getClientSigner({ network: 'evm:sepolia' }),
     ).rejects.toMatchObject({
       code: 'CASPER_SIGNER_NETWORK_NOT_ALLOWED',
     } satisfies Partial<CasperSignerProviderError>);

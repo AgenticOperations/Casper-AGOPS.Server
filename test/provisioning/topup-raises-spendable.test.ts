@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { GatewayClient, type GatewayTransport } from '../../src/lib/circle/gateway.js';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import type { CasperTreasuryClient } from '../../src/lib/casper/treasury-client.js';
 import { depositFor, type ProvisionDeps } from '../../src/engines/provisioning/deposit.js';
 import { confirmDeposit } from '../../src/engines/provisioning/confirm.js';
 import { keys } from '../../src/redis/keyspace.js';
@@ -23,21 +23,18 @@ import {
 const NOW = 1_750_000_000;
 
 /** A gateway that is always final and hands each deposit a distinct op id (so txRefs do not collide). */
-function alwaysFinalGateway(): GatewayClient {
+function alwaysFinalGateway(): CasperTreasuryClient {
   let n = 0;
-  const transport: GatewayTransport = {
-    request<T>(req: { method: 'GET' | 'POST'; path: string; body?: unknown }): Promise<T> {
-      if (req.path === '/v1/gateway/deposit-for') {
-        n += 1;
-        return Promise.resolve({ id: `gw_tx_${n}` } as T);
-      }
-      if (req.path.startsWith('/v1/gateway/operations/')) {
-        return Promise.resolve({ status: 'complete' } as T);
-      }
-      return Promise.reject(new Error(`unexpected path ${req.path}`));
-    },
+  return {
+    getBalances: vi.fn(),
+    deposit: vi.fn(),
+    depositFor: vi.fn(async () => {
+      n += 1;
+      return { id: `gw_tx_${n}` };
+    }),
+    reclaimFor: vi.fn(),
+    isFinal: vi.fn(async () => true),
   };
-  return new GatewayClient(transport);
 }
 
 let stores: Stores | null = null;
@@ -58,6 +55,8 @@ describe('top-up — kind:topup raises spendable additively once confirmed (E5/L
       agentFloatAddress: agentFloat.address,
       amount: usdc(50),
       policy: allocation,
+      // Org is funded well beyond these asks — this suite exercises the POLICY bounds, not solvency.
+      fundedTotal: usdc(1_000_000),
       kind: 'depositFor',
       secondsSinceLastAllocation: null,
       now: NOW,
@@ -72,6 +71,8 @@ describe('top-up — kind:topup raises spendable additively once confirmed (E5/L
       agentFloatAddress: agentFloat.address,
       amount: usdc(30),
       policy: allocation,
+      // Org is funded well beyond these asks — this suite exercises the POLICY bounds, not solvency.
+      fundedTotal: usdc(1_000_000),
       kind: 'topup',
       secondsSinceLastAllocation: 120,
       now: NOW + 120,

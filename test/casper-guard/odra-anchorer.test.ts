@@ -1,8 +1,17 @@
-import { describe, it, expect, vi } from 'vitest';
-import { createOdraGuardRegistryAnchorer } from '../../src/lib/casper/odra-anchorer.js';
+import { writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { createRequire } from 'node:module';
+import {
+  createOdraGuardRegistryAnchorer,
+  createLiveCasperDeploySubmitter,
+} from '../../src/lib/casper/odra-anchorer.js';
 import { buildCasperGuardDeps } from '../../src/config/casper-guard.js';
 import { loadEnv } from '../../src/config/env.js';
 import type { CasperGuardDecisionRecord } from '../../src/engines/casper-guard/store.js';
+
+const require = createRequire(import.meta.url);
 
 const decision = { decisionId: 'cgd_9', orgId: 'org_1', agentId: 'agt_1' } as unknown as CasperGuardDecisionRecord;
 
@@ -34,6 +43,57 @@ describe('OdraGuardRegistryAnchorer', () => {
     await expect(
       anchorer.anchorDecision({ decisionId: 'cgd_9', decisionHash: 'sha256:abc', decision }),
     ).rejects.toThrow('node_unreachable');
+  });
+});
+
+describe('createLiveCasperDeploySubmitter (Casper 2.0 transaction path)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('submits via putTransaction (Casper 2.0), never the deprecated putDeploy path', async () => {
+    // Casper 2.0 nodes accept putDeploy calls but silently never execute them — a decision can look
+    // "confirmed" while nothing lands on-chain. The submitter must go through putTransaction only.
+    const sdk = require('casper-js-sdk') as {
+      RpcClient: {
+        prototype: {
+          putDeploy: (...args: unknown[]) => unknown;
+          putTransaction: (...args: unknown[]) => unknown;
+        };
+      };
+    };
+    const putTransactionSpy = vi
+      .spyOn(sdk.RpcClient.prototype, 'putTransaction')
+      .mockResolvedValue({ transactionHash: { toHex: () => 'real-tx-hash' } } as never);
+    const putDeploySpy = vi.spyOn(sdk.RpcClient.prototype, 'putDeploy');
+
+    const dir = mkdtempSync(join(tmpdir(), 'odra-anchorer-test-'));
+    const pemPath = join(dir, 'secret_key.pem');
+    // Real ed25519 test key material (not a mainnet/testnet funded account) so PrivateKey.fromPem
+    // parses successfully — this proves transaction building/signing works end-to-end.
+    const casperSdk = require('casper-js-sdk') as {
+      PrivateKey: { generate(alg: unknown): { toPem(): string } };
+      KeyAlgorithm: { ED25519: unknown };
+    };
+    const generated = casperSdk.PrivateKey.generate(casperSdk.KeyAlgorithm.ED25519);
+    writeFileSync(pemPath, generated.toPem());
+
+    const submitter = createLiveCasperDeploySubmitter({
+      rpcUrl: 'https://node.example.invalid/rpc',
+      pemPath,
+      algorithm: 'ed25519',
+      chainName: 'casper',
+    });
+
+    const result = await submitter.submit({
+      packageHash: 'a'.repeat(64),
+      entryPoint: 'anchor_decision',
+      args: { decision_id: 'cgd_1', decision_hash: 'sha256:abc' },
+    });
+
+    expect(result.txHash).toBe('real-tx-hash');
+    expect(putTransactionSpy).toHaveBeenCalledTimes(1);
+    expect(putDeploySpy).not.toHaveBeenCalled();
   });
 });
 
