@@ -360,9 +360,10 @@ export function registerCasperGuardRoutes(app: FastifyInstance): void {
     if (parsed.data.agent_id !== auth.agent.agentId) {
       return reply.code(403).send({ error: 'tenant_mismatch' });
     }
-    if (parsed.data.settlement.status === 'settled' && !selection.slot.anchorer) {
-      return reply.code(503).send({ error: 'casper_guard_anchorer_unconfigured' });
-    }
+    // Deliberately NOT rejecting a settled payment when the anchorer is unconfigured. This used to
+    // 503, which refused to record a payment that had already cleared on-chain — losing the record of
+    // real money movement over a missing audit-proof config. Anchoring is additive: reconcile now
+    // reports its absence as anchor_status: 'not_configured' alongside a successful settlement.
 
     const { decisionId } = request.params as { decisionId: string };
     try {

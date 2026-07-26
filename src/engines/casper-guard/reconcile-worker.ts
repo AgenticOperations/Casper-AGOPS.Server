@@ -62,11 +62,32 @@ export interface CasperGuardReconcileDeps {
   staleSubmittedAnchorMs?: number;
 }
 
+/**
+ * Why a settled decision does or does not carry an on-chain proof. A bare `anchored: false` conflates
+ * three very different states — the anchorer was never configured, an anchor attempt failed, or the
+ * decision was already anchored by an earlier reconcile — and leaves the caller no way to tell which.
+ * Each settlement now reports the specific reason so an unanchored decision is diagnosable.
+ */
+export type AnchorStatus =
+  | 'anchored'
+  | 'already_anchored'
+  | 'not_configured'
+  | 'failed'
+  | 'skipped_not_settled';
+
+export interface AnchorOutcome {
+  anchored: boolean;
+  status: AnchorStatus;
+  error?: string;
+}
+
 export interface CasperGuardReconcileResult {
   decisionId: string;
   status: CasperGuardDecisionStatus;
   settled: boolean;
   anchored: boolean;
+  anchorStatus: AnchorStatus;
+  anchorError?: string;
 }
 
 export async function reconcileCasperGuardDecision(
@@ -79,11 +100,24 @@ export async function reconcileCasperGuardDecision(
 
   if (decision.status === 'SETTLED') {
     const settled = await repairSettledHoldCleanup(deps, decision);
-    const anchored = await ensureAuditAnchor(deps, decision);
-    return { decisionId: decision.decisionId, status: 'SETTLED', settled, anchored };
+    const anchor = await ensureAuditAnchor(deps, decision);
+    return {
+      decisionId: decision.decisionId,
+      status: 'SETTLED',
+      settled,
+      anchored: anchor.anchored,
+      anchorStatus: anchor.status,
+      ...(anchor.error ? { anchorError: anchor.error } : {}),
+    };
   }
   if (decision.status === 'EXPIRED' || decision.status === 'FAILED_TERMINAL' || decision.status === 'DENIED') {
-    return { decisionId: decision.decisionId, status: decision.status, settled: false, anchored: false };
+    return {
+      decisionId: decision.decisionId,
+      status: decision.status,
+      settled: false,
+      anchored: false,
+      anchorStatus: 'skipped_not_settled',
+    };
   }
   if (decision.outcome !== 'ALLOW' || !decision.signedHeaderHash) {
     throw new Error('casper_guard_decision_not_reconcilable');
@@ -110,16 +144,25 @@ export async function reconcileCasperGuardDecision(
   console.log('[reconcile] switching on observed.status:', observed.status);
   switch (observed.status) {
     case 'settled': {
-      console.log('[reconcile] settled — checking anchorer, deps.anchorer:', !!deps.anchorer);
-      ensureAnchorerConfigured(deps);
+      // NOTE: settlement is deliberately NOT gated on the anchorer being configured. The payment has
+      // already cleared on-chain at this point; refusing to record that because audit anchoring is
+      // unconfigured would strand a real settled payment in an unsettled state. Anchoring is an
+      // additive audit proof — its absence is reported via anchorStatus, never by failing settlement.
       const settled = await settleSignedDecision(deps, decision, observed);
       const refreshed = await readCasperGuardDecision(deps.pool, decision.decisionId);
       if (!refreshed) throw new Error('casper_guard_decision_not_found_after_settle');
       if (refreshed.status !== 'SETTLED') {
         return resultFromCurrentDecision(deps, refreshed);
       }
-      const anchored = await ensureAuditAnchor(deps, refreshed);
-      return { decisionId: decision.decisionId, status: 'SETTLED', settled, anchored };
+      const anchor = await ensureAuditAnchor(deps, refreshed);
+      return {
+        decisionId: decision.decisionId,
+        status: 'SETTLED',
+        settled,
+        anchored: anchor.anchored,
+        anchorStatus: anchor.status,
+        ...(anchor.error ? { anchorError: anchor.error } : {}),
+      };
     }
     case 'ambiguous':
     case 'pending': {
@@ -249,7 +292,7 @@ async function repairSettledHoldCleanup(
 async function ensureAuditAnchor(
   deps: CasperGuardReconcileDeps,
   decision: CasperGuardDecisionRecord,
-): Promise<boolean> {
+): Promise<AnchorOutcome> {
   const decisionHash = computeCasperGuardDecisionHash(decision);
   const existing = decision.auditAnchors.find(
     (anchor) =>
@@ -257,9 +300,15 @@ async function ensureAuditAnchor(
       anchor.decisionHash === decisionHash &&
       anchor.status === 'confirmed',
   );
-  if (existing) return false;
+  // Already on-chain from an earlier reconcile. This is a SUCCESS — the proof exists — even though
+  // this particular call did not submit it, so it must not read as "unanchored".
+  if (existing) return { anchored: true, status: 'already_anchored' };
 
-  ensureAnchorerConfigured(deps);
+  // Anchoring unconfigured is a deployment state, not an error: settlement already succeeded and the
+  // decision is durable in Postgres. Report it precisely instead of throwing, so the caller can tell
+  // "no Odra contract bound" apart from "the anchor attempt failed".
+  if (!deps.anchorer) return { anchored: false, status: 'not_configured' };
+
   const anchorId = await claimCasperGuardAuditAnchor(deps.pool, {
       anchorId: newCasperGuardAnchorId(),
       decisionId: decision.decisionId,
@@ -267,7 +316,8 @@ async function ensureAuditAnchor(
       staleSubmittedMs: deps.staleSubmittedAnchorMs ?? 300_000,
       network: decision.network,
     });
-  if (!anchorId) return false;
+  // Another worker holds the claim and is mid-submit; not a failure of this call.
+  if (!anchorId) return { anchored: false, status: 'already_anchored' };
 
   try {
     const anchored = await deps.anchorer.anchorDecision({
@@ -275,12 +325,17 @@ async function ensureAuditAnchor(
       decisionHash,
       decision,
     });
-    return await confirmCasperGuardAuditAnchor(deps.pool, { anchorId, txHash: anchored.txHash });
+    const confirmed = await confirmCasperGuardAuditAnchor(deps.pool, { anchorId, txHash: anchored.txHash });
+    return confirmed
+      ? { anchored: true, status: 'anchored' }
+      : { anchored: false, status: 'failed', error: 'anchor_confirm_write_failed' };
   } catch (err) {
     await failCasperGuardAuditAnchor(deps.pool, anchorId);
-    // Anchoring failure is non-fatal — settlement already succeeded. Log and return false.
-    console.error('casper_guard_anchor_failed', err instanceof Error ? err.message : String(err));
-    return false;
+    // Anchoring failure is non-fatal — settlement already succeeded — but the REASON is surfaced to
+    // the caller rather than being reduced to a bare false.
+    const error = err instanceof Error ? err.message : String(err);
+    console.error('casper_guard_anchor_failed', { decisionId: decision.decisionId, error });
+    return { anchored: false, status: 'failed', error };
   }
 }
 
@@ -290,21 +345,23 @@ async function resultFromCurrentDecision(
 ): Promise<CasperGuardReconcileResult> {
   if (decision.status === 'SETTLED') {
     const settled = await repairSettledHoldCleanup(deps, decision);
-    const anchored = await ensureAuditAnchor(deps, decision);
-    return { decisionId: decision.decisionId, status: 'SETTLED', settled, anchored };
+    const anchor = await ensureAuditAnchor(deps, decision);
+    return {
+      decisionId: decision.decisionId,
+      status: 'SETTLED',
+      settled,
+      anchored: anchor.anchored,
+      anchorStatus: anchor.status,
+      ...(anchor.error ? { anchorError: anchor.error } : {}),
+    };
   }
   return {
     decisionId: decision.decisionId,
     status: decision.status,
     settled: false,
     anchored: false,
+    anchorStatus: 'skipped_not_settled',
   };
-}
-
-function ensureAnchorerConfigured(
-  deps: CasperGuardReconcileDeps,
-): asserts deps is CasperGuardReconcileDeps & { anchorer: GuardRegistryAnchorer } {
-  if (!deps.anchorer) throw new Error('casper_guard_anchorer_unconfigured');
 }
 
 export function computeCasperGuardDecisionHash(decision: CasperGuardDecisionRecord): string {

@@ -5,6 +5,13 @@ export interface CsprTradeQuote {
   slippageBps: number;
   riskLabel: string;
   quoteId: string;
+  /**
+   * Expected output in the destination token's smallest unit, as returned by the venue's quote.
+   * This is the PRE-TRADE estimate — never the realized fill. It is carried through so a settled
+   * trade can be compared against what was quoted; a caller must not report it as the executed
+   * amount. Absent when the venue's quote does not include an output figure.
+   */
+  quotedAmountOut?: string;
 }
 
 export interface CsprTradeIntent {
@@ -364,6 +371,8 @@ export class LiveCsprTradeClient implements CsprTradeClient {
       riskLabel: slippageBps < 50 ? 'low' : slippageBps < 150 ? 'medium' : 'high',
       // Encode the token pair into the quoteId so submit() can reconstruct it.
       quoteId: `lq_${tokenIn}_${tokenOut}_${intent.amount}_${Date.now()}`,
+      // The venue's expected output. Pre-trade only — see CsprTradeQuote.quotedAmountOut.
+      ...(quoteResult.amount_out != null ? { quotedAmountOut: String(quoteResult.amount_out) } : {}),
     };
   }
 
@@ -537,7 +546,16 @@ export function createLiveCsprTradeClient(cfg: {
 }
 
 export type CsprTradeResult =
-  | { outcome: 'ALLOW'; quoteId: string; txHash: string; deployHash?: string }
+  | {
+      outcome: 'ALLOW';
+      quoteId: string;
+      txHash: string;
+      deployHash?: string;
+      /** Pre-trade expected output carried from the quote — NOT the realized fill. */
+      quotedAmountOut?: string;
+      /** Slippage the venue quoted, in bps. Pre-trade. */
+      quotedSlippageBps: number;
+    }
   | { outcome: 'DENY'; reason: 'slippage_exceeds_cap' | 'risk_label_not_allowed' };
 
 export function createCsprTradeExecutor(cfg: {
@@ -559,6 +577,10 @@ export function createCsprTradeExecutor(cfg: {
         quoteId: quote.quoteId,
         txHash,
         ...(deployHash ? { deployHash } : {}),
+        // Carried so a settled trade can be compared against what the venue quoted. Both are
+        // PRE-TRADE figures; neither is evidence of the realized fill.
+        ...(quote.quotedAmountOut ? { quotedAmountOut: quote.quotedAmountOut } : {}),
+        quotedSlippageBps: quote.slippageBps,
       };
     },
   };

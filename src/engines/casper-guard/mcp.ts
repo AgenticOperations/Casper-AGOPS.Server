@@ -29,6 +29,7 @@ import {
 import {
   reconcileCasperGuardDecision,
   computeCasperGuardDecisionHash,
+  type AnchorStatus,
 } from './reconcile-worker.js';
 import { composeSettlementReader } from '../../lib/casper/settlement-reader.js';
 import { settleHold } from '../ledger/window.js';
@@ -654,6 +655,39 @@ async function policyCheckTool(
   };
 }
 
+/**
+ * Trade-fill reporting for a settled cspr-trade decision.
+ *
+ * A settled swap proves the deploy executed. It does NOT prove what price was obtained: the venue
+ * returns no post-execution fill, and this server does not (yet) decode CEP-18 transfer events out
+ * of the deploy's execution effects. `min_received` is enforced at AUTHORIZATION time, against the
+ * quote (policy.ts → verifyMinReceivedWithinSlippage) — it is not re-verified against the realized
+ * output.
+ *
+ * Reporting an unverified number as the fill is the failure mode this block exists to prevent. So it
+ * publishes the authorized floor and states plainly that the realized amount is unverified, rather
+ * than echoing a pre-trade estimate in a field the caller would read as executed truth.
+ */
+function tradeFillDisclosure(decision: CasperGuardDecisionRecord): Record<string, unknown> {
+  if (decision.actionKind !== 'cspr-trade') return {};
+  const intent = decision.intent;
+  const minReceived = intent.kind === 'cspr-trade' ? intent.minReceived : null;
+  return {
+    fill: {
+      amount_in: decision.amount,
+      min_received_authorized: minReceived,
+      executed_amount_out: null,
+      executed_price: null,
+      // Explicitly tri-state: not `false` (which would imply the floor was breached) and not `true`
+      // (which would imply verification happened). Nothing on-chain has been read back.
+      min_received_satisfied: null,
+      verification: 'unverified',
+      verification_reason:
+        'Settlement confirms the swap deploy executed on-chain. The realized output amount is not read back from execution effects, so the executed price and the min_received floor are not verified post-trade. min_received was enforced pre-trade against the venue quote at authorization time.',
+    },
+  };
+}
+
 async function reconcileTool(
   app: FastifyInstance,
   deps: CasperGuardDeps,
@@ -687,6 +721,8 @@ async function reconcileTool(
     ]);
 
     let anchorTxHash: string | null = null;
+    let anchorStatus: AnchorStatus = 'not_configured';
+    let anchorError: string | null = null;
     if (deps.anchorer) {
       const refreshed = await readCasperGuardDecision(app.deps.pg, decisionId);
       if (refreshed && refreshed.status === 'SETTLED') {
@@ -694,7 +730,17 @@ async function reconcileTool(
         try {
           const { txHash } = await deps.anchorer.anchorDecision({ decisionId, decisionHash, decision: refreshed });
           anchorTxHash = txHash;
-        } catch { /* anchor failed — decision is still settled */ }
+          anchorStatus = 'anchored';
+        } catch (err) {
+          // Anchoring failure is non-fatal — the decision IS settled either way. But it must never be
+          // silent: a swallowed error here is indistinguishable from "anchoring was never configured",
+          // which is exactly the ambiguity `anchor_status` exists to remove.
+          anchorStatus = 'failed';
+          anchorError = err instanceof Error ? err.message : String(err);
+          console.error('casper_guard_anchor_failed', { decisionId, error: anchorError });
+        }
+      } else {
+        anchorStatus = 'skipped_not_settled';
       }
     }
 
@@ -717,6 +763,8 @@ async function reconcileTool(
       status: 'SETTLED',
       settled: true,
       anchored: anchorTxHash !== null,
+      anchor_status: anchorStatus,
+      ...(anchorError ? { anchor_error: anchorError } : {}),
       tx_hash: userTxHash,
       deploy_hash: userTxHash,
       anchor_tx_hash: anchorTxHash,
@@ -736,6 +784,7 @@ async function reconcileTool(
       status: 'AWAITING_USER_TX',
       settled: false,
       anchored: false,
+      anchor_status: 'skipped_not_settled' satisfies AnchorStatus,
       tx_hash: null,
       message: `Broadcast the EVM transaction from your own wallet first, then call casper_guard_reconcile again with tx_hash set to the transaction hash you received.`,
     };
@@ -779,9 +828,14 @@ async function reconcileTool(
     status: result.status,
     settled: result.settled,
     anchored: result.anchored,
+    // Why the decision is or is not anchored — distinguishes "no Odra contract bound" from a failed
+    // anchor attempt from "already anchored by an earlier reconcile". A bare `anchored: false` cannot.
+    anchor_status: result.anchorStatus,
+    ...(result.anchorError ? { anchor_error: result.anchorError } : {}),
     tx_hash: finalDecision?.txHash ?? null,
     deploy_hash: finalDecision?.deployHash ?? null,
     anchor_tx_hash: finalDecision?.auditAnchors?.find((a) => a.status === 'confirmed')?.txHash ?? null,
+    ...(finalDecision ? tradeFillDisclosure(finalDecision) : {}),
     ...(failureAttempt
       ? {
           failure_reason: failureAttempt.errorCode ?? 'unknown',

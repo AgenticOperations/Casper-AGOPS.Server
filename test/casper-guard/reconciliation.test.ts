@@ -113,8 +113,23 @@ describe('AgentOps reconciliation and Odra anchoring', () => {
       { decisionId: 'cgd_reconcile_settle', agentId },
     );
 
-    expect(first).toMatchObject({ decisionId: 'cgd_reconcile_settle', status: 'SETTLED', settled: true, anchored: true });
-    expect(second).toMatchObject({ decisionId: 'cgd_reconcile_settle', status: 'SETTLED', settled: false, anchored: false });
+    expect(first).toMatchObject({
+      decisionId: 'cgd_reconcile_settle',
+      status: 'SETTLED',
+      settled: true,
+      anchored: true,
+      anchorStatus: 'anchored',
+    });
+    // The second reconcile submits nothing new, but the decision IS on-chain from the first call —
+    // so it reports anchored:true/already_anchored. Previously this returned anchored:false, which
+    // was indistinguishable from "never anchored" despite the proof existing.
+    expect(second).toMatchObject({
+      decisionId: 'cgd_reconcile_settle',
+      status: 'SETTLED',
+      settled: false,
+      anchored: true,
+      anchorStatus: 'already_anchored',
+    });
     expect(await stores.redis.get(keys.reserved(agentId))).toBe('0');
 
     const persisted = await readCasperGuardDecision(stores.pool, 'cgd_reconcile_settle');
@@ -156,6 +171,7 @@ describe('AgentOps reconciliation and Odra anchoring', () => {
       status: 'EXPIRY_CHECK',
       settled: false,
       anchored: false,
+      anchorStatus: 'skipped_not_settled',
     });
     expect(await stores.redis.get(keys.reserved(agentId))).toBe('10');
     const persisted = await readCasperGuardDecision(stores.pool, 'cgd_reconcile_ambiguous');
@@ -193,8 +209,8 @@ describe('AgentOps reconciliation and Odra anchoring', () => {
       { decisionId: 'cgd_reconcile_expired', agentId },
     );
 
-    expect(first).toEqual({ decisionId: 'cgd_reconcile_expired', status: 'EXPIRED', settled: false, anchored: false });
-    expect(second).toEqual({ decisionId: 'cgd_reconcile_expired', status: 'EXPIRED', settled: false, anchored: false });
+    expect(first).toEqual({ decisionId: 'cgd_reconcile_expired', status: 'EXPIRED', settled: false, anchored: false, anchorStatus: 'skipped_not_settled' });
+    expect(second).toEqual({ decisionId: 'cgd_reconcile_expired', status: 'EXPIRED', settled: false, anchored: false, anchorStatus: 'skipped_not_settled' });
     expect(await stores.redis.get(keys.reserved(agentId))).toBe('0');
     const persisted = await readCasperGuardDecision(stores.pool, 'cgd_reconcile_expired');
     expect(persisted).toMatchObject({
@@ -234,6 +250,7 @@ describe('AgentOps reconciliation and Odra anchoring', () => {
       status: 'SETTLED',
       settled: true,
       anchored: true,
+      anchorStatus: 'anchored',
     });
     expect(await stores.redis.get(keys.reserved(agentId))).toBe('0');
     const persisted = await readCasperGuardDecision(stores.pool, 'cgd_reconcile_repair_settled');
@@ -244,7 +261,7 @@ describe('AgentOps reconciliation and Odra anchoring', () => {
     });
   });
 
-  it('fails closed on settled Casper evidence when the audit anchorer is not configured', async ({
+  it('still settles when the audit anchorer is not configured, reporting anchor_status not_configured', async ({
     skip,
   }) => {
     if (!stores) return skip();
@@ -264,17 +281,25 @@ describe('AgentOps reconciliation and Odra anchoring', () => {
         }),
     };
 
-    await expect(
-      reconcileCasperGuardDecision(
-        { pool: stores.pool, redis: stores.redis, settlementReader: reader },
-        { decisionId: 'cgd_reconcile_no_anchorer', agentId },
-      ),
-    ).rejects.toThrow(/casper_guard_anchorer_unconfigured/);
-    expect(await stores.redis.get(keys.reserved(agentId))).toBe('10');
+    /*
+     * The payment has already cleared on-chain when the reader reports 'settled'. Refusing to record
+     * that because audit anchoring is unconfigured would strand real money movement in an unsettled
+     * state — so settlement proceeds and the missing anchor is reported, not thrown.
+     */
+    const result = await reconcileCasperGuardDecision(
+      { pool: stores.pool, redis: stores.redis, settlementReader: reader },
+      { decisionId: 'cgd_reconcile_no_anchorer', agentId },
+    );
+    expect(result).toMatchObject({
+      status: 'SETTLED',
+      settled: true,
+      anchored: false,
+      anchorStatus: 'not_configured',
+    });
     const persisted = await readCasperGuardDecision(stores.pool, 'cgd_reconcile_no_anchorer');
     expect(persisted).toMatchObject({
-      status: 'SIGNED',
-      hold: { status: 'RESERVED' },
+      status: 'SETTLED',
+      hold: { status: 'SETTLED' },
       reconciliationAttempts: [{ attemptNumber: 1, status: 'settled' }],
       auditAnchors: [],
     });
@@ -320,8 +345,8 @@ describe('AgentOps reconciliation and Odra anchoring', () => {
     ]);
 
     expect(results).toEqual([
-      { decisionId: 'cgd_reconcile_concurrent', status: 'EXPIRY_CHECK', settled: false, anchored: false },
-      { decisionId: 'cgd_reconcile_concurrent', status: 'EXPIRY_CHECK', settled: false, anchored: false },
+      { decisionId: 'cgd_reconcile_concurrent', status: 'EXPIRY_CHECK', settled: false, anchored: false, anchorStatus: 'skipped_not_settled' },
+      { decisionId: 'cgd_reconcile_concurrent', status: 'EXPIRY_CHECK', settled: false, anchored: false, anchorStatus: 'skipped_not_settled' },
     ]);
     const persisted = await readCasperGuardDecision(stores.pool, 'cgd_reconcile_concurrent');
     expect(persisted).toMatchObject({
@@ -437,6 +462,7 @@ describe('AgentOps reconciliation and Odra anchoring', () => {
       status: 'EXPIRED',
       settled: false,
       anchored: false,
+      anchorStatus: 'skipped_not_settled',
     });
     expect(await stores.redis.get(keys.reserved(agentId))).toBe('0');
     const persisted = await readCasperGuardDecision(stores.pool, 'cgd_reconcile_settled_loses_expiry');
@@ -500,6 +526,7 @@ describe('AgentOps reconciliation and Odra anchoring', () => {
       status: 'SETTLED',
       settled: true,
       anchored: true,
+      anchorStatus: 'anchored',
     });
     expect(anchorCalls).toBe(1);
     const persisted = await readCasperGuardDecision(stores.pool, 'cgd_reconcile_stale_anchor');
