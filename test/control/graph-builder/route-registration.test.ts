@@ -94,4 +94,35 @@ describe('route registration completeness', () => {
       await app.close();
     }
   }, 30_000);
+
+  /**
+   * J.1 — the same guard for Deploy. Deploy is the one builder route with real-world effects, so
+   * an unmounted Deploy would present as "the visual builder doesn't deploy" — precisely the
+   * symptom that motivated Milestone J. Assert it resolves and is auth-guarded.
+   */
+  it('resolves the J.1 deploy + graph-persistence routes on a real Fastify instance', async () => {
+    const env = loadEnv({
+      ...process.env,
+      DATABASE_URL: 'postgres://stub/stub',
+      REDIS_URL: 'redis://stub:6379',
+      GEMINI_API_KEY: 'test-key',
+    } as NodeJS.ProcessEnv);
+    const app = buildApp({ env, pg: {} as never, redis: {} as never });
+    await app.ready();
+
+    try {
+      for (const [method, url] of [
+        ['POST', '/v1/graph-builder/deploy'],
+        ['POST', '/v1/graph-builder/validate'],
+        ['POST', '/v1/graph-builder/graphs'],
+        ['GET', '/v1/graph-builder/graphs'],
+      ] as const) {
+        const res = await app.inject({ method, url, payload: { name: 'x', graph: { nodes: [], edges: [] } } });
+        expect(res.statusCode, `${method} ${url} should be mounted`).not.toBe(404);
+        expect(res.statusCode, `${method} ${url} should be auth-guarded`).toBe(401);
+      }
+    } finally {
+      await app.close();
+    }
+  }, 30_000);
 });

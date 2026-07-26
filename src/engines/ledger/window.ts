@@ -53,6 +53,8 @@ interface LedgerCommands {
     amountsKey: string,
     reservedKey: string,
     reservedHoldsKey: string,
+    floatConfirmedKey: string,
+    consumedKey: string,
     paymentId: string,
     amount: string,
     enforcementTs: number,
@@ -60,6 +62,7 @@ interface LedgerCommands {
     spendCap: string,
     velocityWindowMinTs: number,
     velocityLimit: number,
+    enforceSolvency: string,
   ): Promise<number>;
   windowSum(windowKey: string, amountsKey: string, minTs: number): Promise<Array<string | null>>;
   settleHold(
@@ -90,7 +93,7 @@ const REGISTERED = new WeakSet<Redis>();
 export function registerLedgerScripts(redis: Redis): void {
   if (REGISTERED.has(redis)) return;
   redis.defineCommand('reserveHold', { numberOfKeys: 7, lua: RESERVE_LUA });
-  redis.defineCommand('reserveHoldWithinPolicy', { numberOfKeys: 7, lua: RESERVE_WITH_POLICY_LUA });
+  redis.defineCommand('reserveHoldWithinPolicy', { numberOfKeys: 9, lua: RESERVE_WITH_POLICY_LUA });
   redis.defineCommand('windowSum', { numberOfKeys: 2, lua: WINDOW_SUM_LUA });
   redis.defineCommand('settleHold', { numberOfKeys: 4, lua: SETTLE_LUA });
   redis.defineCommand('releaseHold', { numberOfKeys: 8, lua: RELEASE_LUA });
@@ -126,11 +129,25 @@ export async function reserveHold(
   return written === 1;
 }
 
-export type PolicyReserveResult = 'reserved' | 'duplicate' | 'cap_exceeded' | 'velocity_exceeded';
+export type PolicyReserveResult =
+  | 'reserved'
+  | 'duplicate'
+  | 'cap_exceeded'
+  | 'velocity_exceeded'
+  | 'insufficient_float';
 
 /**
- * Atomically check hold-inclusive spend cap + 1h velocity, then reserve the hold. This is the
- * policy-safe variant for new guarded rails: no caller may read a window sum and reserve later.
+ * Atomically check hold-inclusive spend cap + 1h velocity + FLOAT SOLVENCY, then reserve the hold.
+ * This is the policy-safe variant for new guarded rails: no caller may read a window sum and reserve
+ * later.
+ *
+ * `spendCap` is a policy dial; `spendable = float_confirmed − consumed − reserved` is custody truth.
+ * Both are enforced inside one Lua script, so concurrent authorizations cannot together overspend
+ * either bound. Without the solvency leg an agent holding zero float could authorize payments and
+ * receive paid data, since the guard's signature — not a balance — is what unlocks the vendor.
+ *
+ * `enforceSolvency: false` skips the balance leg for rails that are not float-backed. It is an
+ * explicit per-call decision, never a default: see the caller in casper-guard/policy.ts.
  */
 export async function reserveHoldWithinPolicy(
   redis: Redis,
@@ -141,6 +158,7 @@ export async function reserveHoldWithinPolicy(
     enforcementTs: number;
     spendCap: bigint;
     velocityLimitPerHour: number;
+    enforceSolvency: boolean;
   },
 ): Promise<PolicyReserveResult> {
   registerLedgerScripts(redis);
@@ -153,6 +171,8 @@ export async function reserveHoldWithinPolicy(
     keys.spendAmounts(params.agentId),
     keys.reserved(params.agentId),
     keys.reservedHolds(params.agentId),
+    keys.floatConfirmed(params.agentId),
+    keys.consumed(params.agentId),
     params.paymentId,
     params.amount.toString(),
     Math.trunc(params.enforcementTs),
@@ -160,11 +180,13 @@ export async function reserveHoldWithinPolicy(
     params.spendCap.toString(),
     snapshot['1h'],
     params.velocityLimitPerHour,
+    params.enforceSolvency ? '1' : '0',
   );
   if (result === 1) return 'reserved';
   if (result === 0) return 'duplicate';
   if (result === -1) return 'cap_exceeded';
   if (result === -2) return 'velocity_exceeded';
+  if (result === -3) return 'insufficient_float';
   throw new Error(`unexpected reserveHoldWithinPolicy result: ${result}`);
 }
 

@@ -26,6 +26,12 @@ import { casperGuardAssetRef, casperGuardIntentPrimaryAsset } from './types.js';
 export type CasperGuardDenyReason =
   | 'per_transaction_max_exceeded'
   | 'spend_cap_exceeded'
+  /**
+   * The agent does not hold enough confirmed float to cover this payment. Distinct from
+   * `spend_cap_exceeded`, which is the POLICY dial: this one means the money is not there. Raising the
+   * cap will not fix it — the agent's float must be funded.
+   */
+  | 'insufficient_float'
   | 'action_not_allowed'
   | 'network_not_allowed'
   | 'service_not_allowed'
@@ -161,6 +167,13 @@ export async function authorizeCasperGuardIntent(
       return { outcome: 'DENY', decisionId: params.decisionId, reason: decision.reason };
     }
 
+    // Float solvency applies to rails that move the AGENT's own money: an x402 service payment and a
+    // DEX swap both draw down agent float, so the agent must actually hold it. `casper-deploy` is
+    // excluded — it is gas paid by the operator account, not from agent float, so gating it on float
+    // would deny deploys for a correctly-funded agent.
+    const enforceSolvency =
+      params.intent.kind === 'x402-payment' || params.intent.kind === 'cspr-trade';
+
     const reserve = await reserveHoldWithinPolicy(deps.redis, {
       agentId: params.agentId,
       paymentId: params.decisionId,
@@ -168,7 +181,18 @@ export async function authorizeCasperGuardIntent(
       enforcementTs: params.now,
       spendCap: BigInt(params.policy.spendCap),
       velocityLimitPerHour: params.policy.velocityLimitPerHour,
+      enforceSolvency,
     });
+    if (reserve === 'insufficient_float') {
+      await persistDeny(deps.pool, params, 'insufficient_float');
+      const detail = await buildInsufficientFloatDetail(deps.redis, params);
+      return {
+        outcome: 'DENY',
+        decisionId: params.decisionId,
+        reason: 'insufficient_float',
+        ...(detail ? { detail } : {}),
+      };
+    }
     if (reserve === 'cap_exceeded' || reserve === 'velocity_exceeded') {
       const reason = reserve === 'cap_exceeded' ? 'spend_cap_exceeded' : 'velocity_exceeded';
       await persistDeny(deps.pool, params, reason);
@@ -612,6 +636,34 @@ async function buildDenyDetail(
       return `Velocity limit is ${limit} payments per hour. ${motesToCspr(usedThisHour)} CSPR already spent this hour — limit reached.`;
     }
     return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Human-readable detail for an insufficient_float denial. Names the remedy — fund the agent's float —
+ * because the obvious reflex (raise the spend cap) cannot fix a balance problem.
+ */
+async function buildInsufficientFloatDetail(
+  redis: Redis,
+  params: { agentId: string; intent: CasperGuardIntent },
+): Promise<string | null> {
+  try {
+    const [floatConfirmedRaw, consumedRaw, reservedRaw] = await Promise.all([
+      redis.get(keys.floatConfirmed(params.agentId)),
+      redis.get(keys.consumed(params.agentId)),
+      redis.get(keys.reserved(params.agentId)),
+    ]);
+    const floatConfirmed = BigInt(floatConfirmedRaw ?? '0');
+    const drawn = BigInt(consumedRaw ?? '0') + BigInt(reservedRaw ?? '0');
+    const spendable = floatConfirmed > drawn ? floatConfirmed - drawn : 0n;
+    const requested = BigInt(params.intent.amount);
+    const motesToCspr = (m: bigint) => (Number(m) / 1_000_000_000).toFixed(4);
+    if (floatConfirmed === 0n) {
+      return `This agent holds no confirmed float. Requested ${motesToCspr(requested)} CSPR. Fund the agent's float from the org treasury before it can pay.`;
+    }
+    return `Spendable float is ${motesToCspr(spendable)} CSPR (confirmed ${motesToCspr(floatConfirmed)} CSPR minus ${motesToCspr(drawn)} CSPR already spent or held). Requested ${motesToCspr(requested)} CSPR. Top up the agent's float.`;
   } catch {
     return null;
   }

@@ -16,6 +16,7 @@ import {
   registerAgent,
 } from '../../src/engines/control/store.js';
 import { recompileAgentPolicy } from '../../src/engines/control/publish.js';
+import { keys } from '../../src/redis/keyspace.js';
 import { bumpOrgEpoch } from '../../src/engines/control/epoch.js';
 import { issueAdminKey } from '../../src/lib/ids.js';
 import type { AllocationPolicy, SpendPolicy } from '../../src/contracts/index.js';
@@ -156,6 +157,13 @@ export async function seedAgent(
     // shared agent-float account, so a depositFor to it passes the fence; an external addr is denied.
     allowedDestinations: [agentFloat.address],
   };
+  // Seed CONFIRMED float so the agent is solvent by default. The spend path enforces
+  // `spendable = float_confirmed − consumed − reserved` inside reserve-with-policy.lua, so an agent
+  // with no float can authorize nothing — without this, every ALLOW case in every suite would deny
+  // with `insufficient_float`. Seeded generously so float is never the binding constraint; suites
+  // that test solvency itself set this key explicitly.
+  await redis.set(keys.floatConfirmed(agent.id), (1_000_000n * 1_000_000_000n).toString());
+
   const sp = await createPolicyVersion(pool, { orgId: org.id, class: 'spend', rules: spend });
   const ap = await createPolicyVersion(pool, { orgId: org.id, class: 'allocation', rules: allocation });
   await assignPolicy(pool, { orgId: org.id, scope: 'org', scopeId: org.id, policyId: sp.policyId, class: 'spend' });
