@@ -124,6 +124,8 @@ describe('AgentOps MCP route', () => {
       'casper_guard_reconcile',
       'casper_guard_legal_context',
       'casper_guard_list_services',
+      // Read-only market-data passthrough — registered alongside list_services in the discover group.
+      'casper_guard_trade_data',
       'casper_guard_create_agent',
       'casper_guard_attach_trading_flow',
       'casper_guard_revoke_agent',

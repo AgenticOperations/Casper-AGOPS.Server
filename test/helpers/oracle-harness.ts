@@ -103,6 +103,12 @@ export function buildOracleApp(
   logStream?: { write(msg: string): void },
   gateway?: CasperTreasuryClient,
   envOverride?: Record<string, string>,
+  /**
+   * Per-network treasury gateways. `gateway` above only populates the testnet slot, so a test that
+   * needs to exercise the mainnet path (or assert that an unconfigured mainnet fails closed with
+   * 503) has to pass this explicitly.
+   */
+  gatewayByNetwork?: Partial<Record<'casper:casper-test' | 'casper:casper', CasperTreasuryClient>>,
 ): FastifyInstance {
   const env = loadEnv({ ...TEST_ENV, ...(envOverride ?? {}) });
   return buildApp({
@@ -111,6 +117,7 @@ export function buildOracleApp(
     redis,
     ...(logStream ? { logStream } : {}),
     ...(gateway ? { gateway } : {}),
+    ...(gatewayByNetwork ? { gatewayByNetwork } : {}),
   });
 }
 

@@ -13,7 +13,31 @@ let app: FastifyInstance | undefined;
 
 beforeAll(async () => {
   stores = await startStores();
-  if (stores) app = buildOracleApp(stores.pool, stores.redis);
+  // The deposit-intent route returns the operator account for the REQUEST's network, and 503s
+  // `operator_wallet_not_configured` when that slot is empty. TEST_ENV sets no CASPER_* keys, so
+  // both slots must be supplied here or every intent creation fails closed before it is reached.
+  if (stores) {
+    // verify-deposit selects a gateway per network and 503s when that slot is empty, so both
+    // networks need one for the cross-network fence assertions to be reached at all.
+    const stubGateway = {
+      getBalances: () => Promise.resolve({ available: 0n }),
+      deposit: () => Promise.resolve({ id: 'tx' }),
+      depositFor: () => Promise.resolve({ id: 'tx' }),
+      reclaimFor: () => Promise.resolve({ id: 'tx' }),
+      isFinal: () => Promise.resolve(true),
+    } as never;
+    app = buildOracleApp(
+      stores.pool,
+      stores.redis,
+      undefined,
+      stubGateway,
+      {
+        CASPER_OPERATOR_ACCOUNT_HASH: 'a'.repeat(64),
+        CASPER_MAINNET_OPERATOR_ACCOUNT_HASH: 'c'.repeat(64),
+      },
+      { 'casper:casper-test': stubGateway, 'casper:casper': stubGateway },
+    );
+  }
 }, 180_000);
 
 afterAll(async () => {
@@ -102,24 +126,45 @@ describe('treasury deposit-intents scoped by request network', () => {
       reclaimFor: () => Promise.resolve({ id: 'tx' }),
       isFinal: () => Promise.resolve(true),
     };
-    const gwApp = buildOracleApp(stores.pool, stores.redis, fakeGateway as never);
+    // gateway is the FOURTH parameter — passing it third put it in the `logStream` slot, so Pino
+    // got an object with no write() and every request died with "stream.write is not a function",
+    // hanging the test until timeout. Also supply the testnet slot of gatewayByNetwork, leaving
+    // mainnet unset so the 503 below exercises the real fail-closed path.
+    const gwApp = buildOracleApp(
+      stores.pool,
+      stores.redis,
+      undefined,
+      fakeGateway,
+      undefined,
+      { 'casper:casper-test': fakeGateway },
+    );
     try {
       const { adminKey } = await seedAgent(stores.pool, stores.redis, 100);
 
-      // Testnet (default header) → the legacy gateway serves balances.
+      // Testnet (default header) → the gateway resolves, so the route serves a balance.
+      //
+      // NOT '42': balances are a per-org, per-network LEDGER SUM (credited deposit intents minus
+      // committed and reserved), not a passthrough to gateway.getBalances — which production never
+      // calls. A freshly seeded org has no credited deposits, so 0 is the correct answer. What this
+      // asserts is gateway SELECTION: testnet resolves and reaches the ledger read, mainnet does not.
       const testnet = await gwApp.inject({
         method: 'GET',
         url: '/v1/treasury/balances',
         headers: { authorization: `Bearer ${adminKey}` },
       });
       expect(testnet.statusCode).toBe(200);
-      expect(testnet.json()).toMatchObject({ available: '42' });
+      expect(testnet.json()).toMatchObject({ available: '0' });
 
       // Mainnet header, but no mainnet gateway configured → honest 503.
+      //
+      // Asserted against verify-deposit, not balances: /v1/treasury/balances never calls
+      // selectGateway (it is a pure ledger read and always 200s), so it cannot show the
+      // fail-closed behaviour this test exists to prove. verify-deposit does select a gateway.
       const mainnet = await gwApp.inject({
-        method: 'GET',
-        url: '/v1/treasury/balances',
+        method: 'POST',
+        url: '/v1/treasury/verify-deposit',
         headers: { authorization: `Bearer ${adminKey}`, 'x-agentops-network': 'casper:casper' },
+        payload: { ref_id: '1' },
       });
       expect(mainnet.statusCode).toBe(503);
       expect(mainnet.json()).toMatchObject({ error: 'network_not_configured' });

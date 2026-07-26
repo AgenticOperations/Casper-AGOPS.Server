@@ -97,9 +97,15 @@ describe('Group C ledger reads (Docker-gated)', () => {
       await stores!.pool.query(
         `INSERT INTO casper_guard_decisions
            (decision_id, idempotency_key, org_id, agent_id, action_kind, network, resource_id,
-            amount, asset_kind, asset_ref, status, outcome, policy_ref, intent_json, created_at)
-         VALUES ($1, $1, $2, $3, 'casper:deploy', $4, 'casper:deploy:guard-registry',
-            '100', 'native', 'CSPR', 'SETTLED', 'ALLOW', 'policy_x@v1', '{}'::jsonb,
+            amount, asset_kind, asset_ref, status, outcome, policy_ref, signed_header_hash,
+            intent_json, created_at)
+         -- action_kind is hyphenated per the 0009 CHECK constraint
+         -- ('x402-payment' | 'cspr-trade' | 'casper-deploy'); resource_id keeps its colon form.
+         -- signed_header_hash must be NON-NULL for a SETTLED row: 0009 enforces that anything past
+         -- SIGNED carries the signed header, so a settled decision cannot exist without one.
+         VALUES ($1, $1, $2, $3, 'casper-deploy', $4, 'casper:deploy:guard-registry',
+            '100', 'native', 'CSPR', 'SETTLED', 'ALLOW', 'policy_x@v1',
+            'sha256:' || repeat('a', 64), '{}'::jsonb,
             '2026-06-19T10:00:00.000Z')`,
         [id, net.orgId, net.agentId, network],
       );
