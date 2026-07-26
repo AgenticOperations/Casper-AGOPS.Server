@@ -38,6 +38,37 @@ const DeployBodySchema = z.object({
   graph: z.unknown(),
 });
 
+/**
+ * Classify a saveGraph failure honestly.
+ *
+ * `saveGraph` throws a plain Error ONLY for its cross-org guard (a graph id that exists under a
+ * different org) — that is the single case meaning "not found for you". Everything else is
+ * infrastructure, and the overwhelmingly common one is Postgres `42P01 undefined_table`: migration
+ * 0018 has not been applied to this environment. Collapsing all of these into 404 graph_not_found
+ * (as the first version did) sends an operator hunting for a missing graph when the real problem
+ * is a missing table — so each failure keeps its own identity and its own remedy.
+ */
+function classifySaveFailure(err: unknown): {
+  status: number;
+  body: { error: string; message?: string };
+} {
+  const message = err instanceof Error ? err.message : String(err);
+  if (message.includes('another org')) {
+    return { status: 404, body: { error: 'graph_not_found' } };
+  }
+  if ((err as { code?: string })?.code === '42P01') {
+    return {
+      status: 503,
+      body: {
+        error: 'builder_storage_unavailable',
+        message:
+          'The builder_graphs table does not exist — run the database migrations (pnpm migrate) for this environment.',
+      },
+    };
+  }
+  return { status: 500, body: { error: 'graph_save_failed', message: 'Could not save the graph.' } };
+}
+
 export function registerGraphBuilderRoutes(app: FastifyInstance): void {
   const { env } = app.deps;
 
@@ -101,10 +132,10 @@ export function registerGraphBuilderRoutes(app: FastifyInstance): void {
         graph: parsed.data.graph ?? { nodes: [], edges: [] },
       });
       return reply.code(200).send({ graph: saved });
-    } catch {
-      // saveGraph throws only when the id exists under a DIFFERENT org. 404, not 409 — never
-      // confirm the existence of another tenant's resource.
-      return reply.code(404).send({ error: 'graph_not_found' });
+    } catch (err) {
+      request.log.error({ err }, 'graph-builder: saveGraph failed');
+      const { status, body } = classifySaveFailure(err);
+      return reply.code(status).send(body);
     }
   });
 
@@ -147,8 +178,11 @@ export function registerGraphBuilderRoutes(app: FastifyInstance): void {
     // Persist BEFORE deploying: if the deploy half-fails, the user's canvas still survives.
     try {
       await saveGraph(pool, { id: graphId, orgId, name: parsed.data.name, graph: parsed.data.graph ?? {} });
-    } catch {
-      return reply.code(404).send({ error: 'graph_not_found' });
+    } catch (err) {
+      request.log.error({ err, graphId }, 'graph-builder: saveGraph failed before deploy');
+      const { status, body } = classifySaveFailure(err);
+      // Nothing was created — the save happens before any agent is registered.
+      return reply.code(status).send(body);
     }
 
     try {
