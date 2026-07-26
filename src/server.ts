@@ -53,6 +53,9 @@ async function main(): Promise<void> {
     operatorAccountHash: env.CASPER_OPERATOR_ACCOUNT_HASH,
     pemPath: testnetPemPath,
     algorithm: env.CASPER_GUARD_SIGNER_ALGORITHM,
+    // Explicit: the submitter defaults to 'casper-test' when chainName is omitted, which is right
+    // here only by coincidence. Stating it keeps the testnet/mainnet pair symmetrical.
+    chainName: 'casper-test',
   });
 
   // Mainnet treasury gateway — only when the mainnet operator + RPC are configured. Reads the mainnet
@@ -73,6 +76,12 @@ async function main(): Promise<void> {
           operatorAccountHash: env.CASPER_MAINNET_OPERATOR_ACCOUNT_HASH,
           pemPath: mainnetPemPath,
           algorithm: env.CASPER_GUARD_MAINNET_SIGNER_ALGORITHM,
+          /*
+           * REQUIRED. Omitting this made the submitter fall back to 'casper-test' (odra-anchorer's
+           * default), so every mainnet treasury transfer was signed for the wrong chain and the
+           * mainnet node rejected it with `-32016 Invalid transaction: invalid chain name`.
+           */
+          chainName: 'casper',
         })
       : undefined;
 

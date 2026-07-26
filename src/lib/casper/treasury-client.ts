@@ -15,7 +15,15 @@ export interface CasperTreasuryConfig {
   operatorAccountHash: string;
   pemPath: string;
   algorithm: CasperKeyAlgorithmName;
-  chainName?: string;
+  /**
+   * REQUIRED — must match the network `rpcUrl` points at.
+   *
+   * This was optional, and the underlying submitter defaults to 'casper-test' when it is absent. The
+   * mainnet gateway omitted it, so every mainnet treasury transfer was signed for testnet and the
+   * node rejected it with `-32016 Invalid transaction: invalid chain name`. Requiring it makes that
+   * mistake a compile error rather than a runtime rejection at the worst possible moment.
+   */
+  chainName: 'casper-test' | 'casper';
 }
 
 export interface CasperTreasurySeams {
@@ -37,7 +45,7 @@ const defaultSeams = (cfg: CasperTreasuryConfig): CasperTreasurySeams => {
     rpcUrl: cfg.rpcUrl,
     pemPath: cfg.pemPath,
     algorithm: cfg.algorithm,
-    ...(cfg.chainName ? { chainName: cfg.chainName } : {}),
+    chainName: cfg.chainName,
   });
   return {
     queryBalance: queryCasperAccountBalance,
