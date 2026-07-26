@@ -409,7 +409,15 @@ describe('AgentOps reconciliation and Odra anchoring', () => {
     expect(results.every((result) => result.decisionId === 'cgd_reconcile_anchor_race')).toBe(true);
     expect(results.every((result) => result.status === 'SETTLED')).toBe(true);
     expect(results.filter((result) => result.settled)).toHaveLength(1);
-    expect(results.filter((result) => result.anchored)).toHaveLength(1);
+    /*
+     * Exactly one worker submits. The other either finds the confirmed anchor ('already_anchored')
+     * or loses the claim while the winner is still submitting ('submit_in_flight') — which of the
+     * two depends on scheduling, so both are accepted. Neither may report 'failed'. The real
+     * no-double-submit invariant is anchorCalls === 1, asserted directly rather than inferred.
+     */
+    expect(results.filter((r) => r.anchorStatus === 'anchored')).toHaveLength(1);
+    const loser = results.find((r) => r.anchorStatus !== 'anchored');
+    expect(['already_anchored', 'submit_in_flight']).toContain(loser?.anchorStatus);
     expect(anchorCalls).toBe(1);
     const persisted = await readCasperGuardDecision(stores.pool, 'cgd_reconcile_anchor_race');
     expect(persisted?.auditAnchors).toHaveLength(1);

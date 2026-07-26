@@ -117,11 +117,51 @@ function resolveSlotPemPath(pemPath: string, pemInline: string, tmpFileName: str
   return undefined;
 }
 
+/**
+ * The public CSPR.trade venue. It trades against Casper MAINNET liquidity — there is no testnet
+ * pool behind it. Testnet must instead point at the self-hosted `Casper-AGOPS.TradeMCP` deployment
+ * (`@make-software/cspr-trade-mcp` run against casper-test).
+ */
+const PUBLIC_MAINNET_TRADE_MCP_HOST = 'mcp.cspr.trade';
+
+/**
+ * Reject a trade-venue URL that belongs to the other network's slot.
+ *
+ * A swap routed to the wrong venue does not fail loudly — it quotes and executes against real
+ * liquidity on the wrong chain. Pointing the testnet slot at the public mainnet venue means an
+ * agent's "testnet" swap spends mainnet funds; the reverse silently trades mainnet intent against a
+ * testnet pool. Neither is recoverable after the deploy lands, so this fails at boot instead.
+ */
+function assertTradeVenueMatchesNetwork(chainName: string, tradeMcpUrl: string): void {
+  if (tradeMcpUrl === '') return;
+  let host: string;
+  try {
+    host = new URL(tradeMcpUrl).host.toLowerCase();
+  } catch {
+    throw new Error(`Invalid trade MCP URL for chain "${chainName}": ${tradeMcpUrl}`);
+  }
+  const isPublicMainnetVenue = host === PUBLIC_MAINNET_TRADE_MCP_HOST;
+  if (chainName === 'casper-test' && isPublicMainnetVenue) {
+    throw new Error(
+      `CSPR_TRADE_MCP_URL (testnet) points at the public MAINNET venue ${PUBLIC_MAINNET_TRADE_MCP_HOST}. ` +
+        'Testnet swaps must use the self-hosted testnet MCP (Casper-AGOPS.TradeMCP). ' +
+        `Set CSPR_TRADE_MCP_URL to the self-hosted testnet endpoint, and ${PUBLIC_MAINNET_TRADE_MCP_HOST} only on CSPR_TRADE_MAINNET_MCP_URL.`,
+    );
+  }
+  if (chainName === 'casper' && !isPublicMainnetVenue) {
+    throw new Error(
+      `CSPR_TRADE_MAINNET_MCP_URL points at "${host}", which is not the public mainnet venue ` +
+        `${PUBLIC_MAINNET_TRADE_MCP_HOST}. Mainnet swaps must not be routed to a testnet or self-hosted venue.`,
+    );
+  }
+}
+
 function buildNetworkSlot(
   fields: NetworkSlotEnvFields,
   env: Env,
   vaultCtx?: CasperGuardVaultContext,
 ): CasperGuardNetworkSlot {
+  assertTradeVenueMatchesNetwork(fields.chainName, fields.tradeMcpUrl);
   const signerPemPath = resolveSlotPemPath(
     fields.signerPemPath,
     fields.signerPemInline,

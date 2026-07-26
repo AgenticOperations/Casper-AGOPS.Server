@@ -69,10 +69,17 @@ export interface CasperGuardReconcileDeps {
  * Each settlement now reports the specific reason so an unanchored decision is diagnosable.
  */
 export type AnchorStatus =
+  /** This call submitted the anchor and it confirmed. */
   | 'anchored'
+  /** A previous reconcile already confirmed it on-chain. */
   | 'already_anchored'
+  /** A concurrent worker holds the claim and is mid-submit — not yet confirmed, not a failure. */
+  | 'submit_in_flight'
+  /** No Odra contract bound; anchoring was never attempted. */
   | 'not_configured'
+  /** An anchor attempt was made and failed — see anchorError. */
   | 'failed'
+  /** The decision is not in a settled state, so there is nothing to anchor. */
   | 'skipped_not_settled';
 
 export interface AnchorOutcome {
@@ -316,8 +323,13 @@ async function ensureAuditAnchor(
       staleSubmittedMs: deps.staleSubmittedAnchorMs ?? 300_000,
       network: decision.network,
     });
-  // Another worker holds the claim and is mid-submit; not a failure of this call.
-  if (!anchorId) return { anchored: false, status: 'already_anchored' };
+  /*
+   * Another worker won the claim and is mid-submit. The anchor is NOT yet confirmed on-chain, so
+   * this must not claim `anchored: true` — but it is also not a failure of this call, and a later
+   * reconcile will observe the confirmed anchor. Distinct from 'already_anchored', which means the
+   * proof is durably confirmed.
+   */
+  if (!anchorId) return { anchored: false, status: 'submit_in_flight' };
 
   try {
     const anchored = await deps.anchorer.anchorDecision({

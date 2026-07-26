@@ -64,6 +64,9 @@ const EnvSchema = z.object({
   CASPER_GUARD_MAINNET_ODRA_ALGORITHM: z.enum(['ed25519', 'secp256k1']).default('ed25519'),
   CASPER_GUARD_MAINNET_FACILITATOR_RPC_URL: z.string().url().or(z.literal('')).default(''),
   CASPER_GUARD_MAINNET_FACILITATOR_URL: z.string().url().or(z.literal('')).default(''),
+  // MAINNET trade venue — the public https://mcp.cspr.trade/mcp. Real funds, real liquidity.
+  // Boot fails if this points anywhere else (a self-hosted/testnet venue would silently execute
+  // mainnet-intended swaps against a testnet pool).
   CSPR_TRADE_MAINNET_MCP_URL: z.string().url().or(z.literal('')).default(''),
   CSPR_TRADE_MAINNET_SENDER_PUBLIC_KEY: z.string().default(''),
   CSPR_TRADE_MAINNET_SIGNER_PEM_PATH: z.string().default(''),
@@ -87,8 +90,10 @@ const EnvSchema = z.object({
     .default(''),
   CSPR_TRADE_MAX_SLIPPAGE_BPS: z.coerce.number().int().min(0).max(10_000).default(100),
   CSPR_TRADE_ALLOWED_RISK_LABELS: z.string().min(1).default('low,medium'),
-  // Live CSPR.trade MCP integration. Defaults empty (UnavailableCsprTradeClient). Set to
-  // https://mcp.cspr.trade/mcp to enable real DEX quotes + testnet swap execution.
+  // TESTNET trade venue. Defaults empty (UnavailableCsprTradeClient). Must be the SELF-HOSTED
+  // testnet MCP (Casper-AGOPS.TradeMCP — @make-software/cspr-trade-mcp run against casper-test).
+  // NOT https://mcp.cspr.trade/mcp: that is the public MAINNET venue and trades real mainnet
+  // liquidity. Boot fails (assertTradeVenueMatchesNetwork) if this points at mcp.cspr.trade.
   CSPR_TRADE_MCP_URL: z.string().url().or(z.literal('')).default(''),
   // Casper public key (hex, 66 chars with 01/02 prefix) for the sender_public_key field in build_swap.
   // Typically the same public key as the Guard signer PEM. Required for LiveCsprTradeClient.
