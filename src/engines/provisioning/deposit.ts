@@ -41,6 +41,12 @@ export interface DepositForParams {
   agentFloatAddress: string;
   amount: bigint;
   policy: AllocationPolicy;
+  /**
+   * The org's REAL deposited balance for this network (base units) — the solvency ceiling checked
+   * atomically with the policy budget. An org that never funded the parent treasury has 0 here and can
+   * provision no float. Callers pass `getTreasuryBalances(...).available`.
+   */
+  fundedTotal: bigint;
   kind: 'depositFor' | 'topup';
   /** Seconds since this agent's last allocation; threaded for the M6 cooldown/sibling-quota check. */
   secondsSinceLastAllocation: number | null;
@@ -78,7 +84,8 @@ export async function depositFor(
     params;
   const runFunding = params.fundAgentOnChain ?? fundAgentOnChainDefault;
 
-  // 1. P3-B gate. A DENY reserves nothing and moves no money (it never reaches Circle).
+  // 1. P3-B gate. A DENY reserves nothing and moves no money (it never reaches Circle). This includes
+  //    the solvency ceiling: float can only be backed by CSPR the org actually deposited.
   const decision = await evaluateAllocation(redis, {
     orgId,
     agentId,
@@ -86,6 +93,7 @@ export async function depositFor(
     destination: agentFloatAddress,
     secondsSinceLastAllocation,
     policy,
+    fundedTotal: params.fundedTotal,
   });
   if (!decision.allow) return { outcome: 'DENY', reason: decision.reason };
 

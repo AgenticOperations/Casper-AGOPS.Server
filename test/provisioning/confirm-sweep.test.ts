@@ -41,6 +41,8 @@ describe('sweepPendingConfirmations promotes pending floats only on finality', (
       agentFloatAddress,
       amount: usdc(50),
       policy: allocation,
+      // Org is funded well beyond these asks — this suite exercises the POLICY bounds, not solvency.
+      fundedTotal: usdc(1_000_000),
       kind: 'depositFor',
       secondsSinceLastAllocation: null,
       now: 1000,

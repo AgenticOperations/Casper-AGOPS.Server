@@ -55,6 +55,8 @@ describe('top-up — kind:topup raises spendable additively once confirmed (E5/L
       agentFloatAddress: agentFloat.address,
       amount: usdc(50),
       policy: allocation,
+      // Org is funded well beyond these asks — this suite exercises the POLICY bounds, not solvency.
+      fundedTotal: usdc(1_000_000),
       kind: 'depositFor',
       secondsSinceLastAllocation: null,
       now: NOW,
@@ -69,6 +71,8 @@ describe('top-up — kind:topup raises spendable additively once confirmed (E5/L
       agentFloatAddress: agentFloat.address,
       amount: usdc(30),
       policy: allocation,
+      // Org is funded well beyond these asks — this suite exercises the POLICY bounds, not solvency.
+      fundedTotal: usdc(1_000_000),
       kind: 'topup',
       secondsSinceLastAllocation: 120,
       now: NOW + 120,

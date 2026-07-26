@@ -136,6 +136,12 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
 
       const now = Math.floor(Date.now() / 1000);
       const gap = await secondsSinceLastAllocation(pool, agentId, now);
+
+      // Solvency input: the org's REAL deposited balance on THIS network. Read per-request (never
+      // cached) and re-checked atomically inside the reserve, so an org that has not funded the parent
+      // treasury cannot provision agent float — the ceiling this endpoint previously lacked entirely.
+      const balances = await getTreasuryBalances({ redis, pool }, orgId, resolved.network);
+
       const deps: ProvisionDeps = { pool, redis, gateway };
       const result = await depositFor(deps, {
         orgId,
@@ -143,6 +149,7 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
         agentFloatAddress: plan.agentFloatAddress,
         amount: BigInt(body.amount),
         policy: plan.effectivePolicy,
+        fundedTotal: BigInt(balances.available),
         kind,
         secondsSinceLastAllocation: gap,
         now,

@@ -54,6 +54,9 @@ const req = (over: Partial<Parameters<typeof evaluateAllocation>[1]> = {}) => ({
   destination: 'agt_child_1',
   secondsSinceLastAllocation: null,
   policy,
+  // Default: a well-funded org, so the pre-existing cases below keep testing the POLICY budget in
+  // isolation. The solvency suite overrides this explicitly.
+  fundedTotal: usdc(1_000_000),
   ...over,
 });
 
@@ -108,5 +111,70 @@ describe('evaluateAllocation — deny_all first, atomic budget reserve (BUG-19)'
     const reserved = BigInt((await redis.get(keys.allocationReserved(ORG))) ?? '0');
     expect(reserved).toBe(usdc(90));
     expect(reserved).toBeLessThanOrEqual(policy.totalBudget);
+  });
+});
+
+/**
+ * Solvency ceiling: agent float must be backed by CSPR the org actually deposited into the parent
+ * treasury. Before this gate, `evaluateAllocation` compared only against `policy.totalBudget` — a
+ * policy constant — so an org with ZERO deposits could still provision float up to that dial, handing
+ * agents spending authority against money that never existed.
+ */
+describe('evaluateAllocation — treasury solvency ceiling (unfunded org cannot allocate float)', () => {
+  it('DENIES any allocation when the org has never deposited (funded = 0)', async ({ skip }) => {
+    if (!dockerAvailable || !redis) return skip();
+    // The reported bug, exactly: policy budget is a healthy 100, but nothing was ever deposited.
+    const d = await evaluateAllocation(redis, req({ fundedTotal: 0n }));
+    expect(d).toEqual({ allow: false, reason: 'treasury_insufficient_funds' });
+    // An insolvent ask reserves nothing.
+    expect(await redis.get(keys.allocationReserved(ORG))).toBeNull();
+  });
+
+  it('DENIES an allocation that exceeds real deposits even when well inside the policy budget', async ({ skip }) => {
+    if (!dockerAvailable || !redis) return skip();
+    // Deposited 10, policy allows 100, asking 30 → policy says yes, custody says no.
+    const d = await evaluateAllocation(redis, req({ requested: usdc(30), fundedTotal: usdc(10) }));
+    expect(d).toEqual({ allow: false, reason: 'treasury_insufficient_funds' });
+    expect(await redis.get(keys.allocationReserved(ORG))).toBeNull();
+  });
+
+  it('ALLOWS an allocation fully covered by real deposits', async ({ skip }) => {
+    if (!dockerAvailable || !redis) return skip();
+    const d = await evaluateAllocation(redis, req({ requested: usdc(30), fundedTotal: usdc(30) }));
+    expect(d).toEqual({ allow: true });
+    expect(await redis.get(keys.allocationReserved(ORG))).toBe(usdc(30).toString());
+  });
+
+  it('counts already-outstanding allocations against the funded balance', async ({ skip }) => {
+    if (!dockerAvailable || !redis) return skip();
+    // 25 already committed against 30 deposited leaves 5 — a second 30 must be refused.
+    await redis.set(keys.allocationCommitted(ORG), usdc(25).toString());
+    const d = await evaluateAllocation(redis, req({ requested: usdc(30), fundedTotal: usdc(30) }));
+    expect(d).toEqual({ allow: false, reason: 'treasury_insufficient_funds' });
+    expect(await redis.get(keys.allocationReserved(ORG))).toBeNull();
+  });
+
+  it('reports the POLICY dial when a request breaches both ceilings', async ({ skip }) => {
+    if (!dockerAvailable || !redis) return skip();
+    // Over per_agent_max (40) AND over funded (10): the operator should be told the policy refused it,
+    // since raising the budget is the action that would matter first.
+    const d = await evaluateAllocation(redis, req({ requested: usdc(41), fundedTotal: usdc(10) }));
+    expect(d).toEqual({ allow: false, reason: 'allocation_exceeded' });
+    expect(await redis.get(keys.allocationReserved(ORG))).toBeNull();
+  });
+
+  it('never overdraws real deposits under concurrency (atomic, same TOCTOU class as BUG-19)', async ({ skip }) => {
+    if (!dockerAvailable || !redis) return skip();
+    // Deposited 50 with a policy budget of 100: the FUNDED bound is tighter, so only 1 of 10 concurrent
+    // 30-unit asks may pass. A check-then-reserve split would let several through here.
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () =>
+        evaluateAllocation(redis!, req({ requested: usdc(30), fundedTotal: usdc(50) })),
+      ),
+    );
+    expect(results.filter((r) => r.allow).length).toBe(1);
+    const reserved = BigInt((await redis.get(keys.allocationReserved(ORG))) ?? '0');
+    expect(reserved).toBe(usdc(30));
+    expect(reserved).toBeLessThanOrEqual(usdc(50));
   });
 });

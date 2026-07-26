@@ -67,6 +67,9 @@ function baseParams(over: Partial<DepositForParams> = {}): DepositForParams {
     agentFloatAddress: '00op',
     amount: 3_000_000_000n,
     policy: POLICY,
+    // This suite drives a stubbed reserve to isolate the on-chain funding orchestration; solvency is
+    // covered by allocation-budget.test.ts. Funded high so it never becomes the reason for a DENY.
+    fundedTotal: 1_000_000_000_000n,
     kind: 'depositFor',
     secondsSinceLastAllocation: null,
     now: 1000,

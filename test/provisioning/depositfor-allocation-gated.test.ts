@@ -83,6 +83,8 @@ describe('depositFor — P3-B allocation-gated, two-phase float_pending (BUG-29)
       agentFloatAddress: agentFloat.address,
       amount: usdc(50),
       policy: allocation,
+      // Org is funded well beyond these asks — this suite exercises the POLICY bounds, not solvency.
+      fundedTotal: usdc(1_000_000),
       kind: 'depositFor',
       secondsSinceLastAllocation: null,
       now: NOW,
@@ -132,6 +134,8 @@ describe('depositFor — P3-B allocation-gated, two-phase float_pending (BUG-29)
         agentFloatAddress: VENDOR, // external address — not in allowedDestinations (own agents only)
         amount: usdc(50),
         policy: allocation,
+        // Org is funded well beyond these asks — this suite exercises the POLICY bounds, not solvency.
+        fundedTotal: usdc(1_000_000),
         kind: 'depositFor',
         secondsSinceLastAllocation: null,
         now: NOW,
@@ -158,6 +162,8 @@ describe('depositFor — P3-B allocation-gated, two-phase float_pending (BUG-29)
         agentFloatAddress: agentFloat.address,
         amount: usdc(1001), // perAgentMax is usdc(1000)
         policy: allocation,
+        // Org is funded well beyond these asks — this suite exercises the POLICY bounds, not solvency.
+        fundedTotal: usdc(1_000_000),
         kind: 'depositFor',
         secondsSinceLastAllocation: null,
         now: NOW,
@@ -184,6 +190,8 @@ describe('depositFor — P3-B allocation-gated, two-phase float_pending (BUG-29)
           agentFloatAddress: agentFloat.address,
           amount: usdc(50),
           policy: allocation,
+          // Org is funded well beyond these asks — this suite exercises the POLICY bounds, not solvency.
+          fundedTotal: usdc(1_000_000),
           kind: 'depositFor',
           secondsSinceLastAllocation: null,
           now: NOW,

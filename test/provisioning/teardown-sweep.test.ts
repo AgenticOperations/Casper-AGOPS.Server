@@ -100,6 +100,8 @@ describe('teardown sweep — no stranded float_pending, confirmed float reclaime
       agentFloatAddress: agentFloat.address,
       amount,
       policy: allocation,
+      // Org is funded well beyond these asks — this suite exercises the POLICY bounds, not solvency.
+      fundedTotal: usdc(1_000_000),
       kind: 'depositFor' as const,
       secondsSinceLastAllocation: null,
       now,
@@ -180,6 +182,8 @@ describe('teardown sweep — no stranded float_pending, confirmed float reclaime
       agentFloatAddress: agentFloat.address,
       amount: usdc(25),
       policy: allocation,
+      // Org is funded well beyond these asks — this suite exercises the POLICY bounds, not solvency.
+      fundedTotal: usdc(1_000_000),
       kind: 'depositFor',
       secondsSinceLastAllocation: null,
       now: NOW,
@@ -209,6 +213,8 @@ describe('teardown sweep — no stranded float_pending, confirmed float reclaime
       agentFloatAddress: agentFloat.address,
       amount: usdc(40),
       policy: allocation,
+      // Org is funded well beyond these asks — this suite exercises the POLICY bounds, not solvency.
+      fundedTotal: usdc(1_000_000),
       kind: 'depositFor',
       secondsSinceLastAllocation: null,
       now: NOW,

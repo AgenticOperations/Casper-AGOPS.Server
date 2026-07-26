@@ -59,6 +59,8 @@ describe('depositFor cooldown — P3-B rate-shapes re-allocation (allocation_coo
       agentFloatAddress: agentFloat.address,
       amount: usdc(50),
       policy: { ...allocation, cooldownSeconds: 3600 },
+      // Funded well beyond the ask — this suite exercises the cooldown, not solvency.
+      fundedTotal: usdc(1_000_000),
       kind: 'depositFor',
       secondsSinceLastAllocation: 1800, // only 30 min since the last allocation < 1h cooldown.
       now: NOW,
@@ -84,6 +86,8 @@ describe('depositFor cooldown — P3-B rate-shapes re-allocation (allocation_coo
       agentFloatAddress: agentFloat.address,
       amount: usdc(50),
       policy: { ...allocation, cooldownSeconds: 3600 },
+      // Funded well beyond the ask — this suite exercises the cooldown, not solvency.
+      fundedTotal: usdc(1_000_000),
       kind: 'depositFor',
       secondsSinceLastAllocation: 3600, // exactly at the boundary — the cooldown has elapsed.
       now: NOW,
@@ -107,6 +111,8 @@ describe('depositFor cooldown — P3-B rate-shapes re-allocation (allocation_coo
       agentFloatAddress: agentFloat.address,
       amount: usdc(50),
       policy: { ...allocation, cooldownSeconds: 3600 },
+      // Funded well beyond the ask — this suite exercises the cooldown, not solvency.
+      fundedTotal: usdc(1_000_000),
       kind: 'depositFor',
       secondsSinceLastAllocation: null, // never allocated before.
       now: NOW,

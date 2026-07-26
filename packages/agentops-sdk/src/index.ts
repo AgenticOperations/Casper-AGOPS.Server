@@ -1,4 +1,5 @@
 export * from './mcp.js';
+export * from './guarded-fetch.js';
 
 /**
  * @agops-labs/sdk — thin REST client for the AgentOps proxy (Phase 2 Milestone F.3, D-4).
