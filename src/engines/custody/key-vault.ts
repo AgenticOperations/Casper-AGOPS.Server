@@ -112,7 +112,14 @@ export class EncryptedStoreVault implements KeyVault {
   }
 }
 
-/** KmsVault (documented production future-scope) — NOT built for finals; every call throws. */
+/**
+ * KmsVault (documented production future-scope) — NOT built for finals; every call throws.
+ *
+ * Every method is `async` with no `await`: they implement the KeyVault interface, whose real
+ * KMS-backed implementation awaits remote calls. Dropping `async` to satisfy require-await would
+ * break the interface these stubs exist to satisfy.
+ */
+/* eslint-disable @typescript-eslint/require-await */
 export class KmsVault implements KeyVault {
   private unavailable(): never {
     throw new Error('KmsVault is not configured — production future-scope, not built for finals');
@@ -138,3 +145,4 @@ export class KmsVault implements KeyVault {
     this.unavailable();
   }
 }
+/* eslint-enable @typescript-eslint/require-await */

@@ -209,7 +209,7 @@ describe('createGuardedFetch — refusals', () => {
         }) as unknown as Response;
       return make();
     });
-    const guarded = createGuardedFetch(config(fetchImpl as never));
+    const guarded = createGuardedFetch(config(fetchImpl));
 
     await expect(guarded(SERVICE)).rejects.toBeInstanceOf(PaymentFlowError);
   });

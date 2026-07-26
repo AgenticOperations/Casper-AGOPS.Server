@@ -64,7 +64,7 @@ describe('createLiveCasperDeploySubmitter (Casper 2.0 transaction path)', () => 
     };
     const putTransactionSpy = vi
       .spyOn(sdk.RpcClient.prototype, 'putTransaction')
-      .mockResolvedValue({ transactionHash: { toHex: () => 'real-tx-hash' } } as never);
+      .mockResolvedValue({ transactionHash: { toHex: () => 'real-tx-hash' } });
     const putDeploySpy = vi.spyOn(sdk.RpcClient.prototype, 'putDeploy');
 
     const dir = mkdtempSync(join(tmpdir(), 'odra-anchorer-test-'));
@@ -109,7 +109,7 @@ describe('buildCasperGuardDeps odra wiring', () => {
   };
 
   it('stays honest-blocked when odra package hash / rpc are not set', () => {
-    const env = loadEnv(SCHEMA_MIN as never);
+    const env = loadEnv(SCHEMA_MIN);
     const deps = buildCasperGuardDeps(env);
     expect(deps.odra?.configured).toBe(false);
     expect(deps.anchorer).toBeUndefined();
@@ -121,7 +121,7 @@ describe('buildCasperGuardDeps odra wiring', () => {
       CASPER_GUARD_ODRA_PACKAGE_HASH: 'e'.repeat(64),
       CASPER_GUARD_ODRA_RPC_URL: 'https://node.testnet.casper.network/rpc',
       CASPER_GUARD_SIGNER_PEM_PATH: '/tmp/key.pem',
-    } as never);
+    });
     const deps = buildCasperGuardDeps(env);
     expect(deps.odra?.configured).toBe(true);
     expect(typeof deps.anchorer?.anchorDecision).toBe('function');

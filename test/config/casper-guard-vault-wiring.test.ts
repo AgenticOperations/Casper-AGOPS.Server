@@ -24,7 +24,7 @@ const SCHEMA_MIN = {
 
 describe('buildCasperGuardDeps wires the vault-aware signer when a pool + vault secret are given (deferred B.4 wiring)', () => {
   it('the testnet slot signer resolves per-agent when agentId is passed to sign(), using readActiveDelegatedKey', async () => {
-    const env = loadEnv({ ...SCHEMA_MIN, CASPER_GUARD_VAULT_MASTER_SECRET: 'a-real-secret' } as never);
+    const env = loadEnv({ ...SCHEMA_MIN, CASPER_GUARD_VAULT_MASTER_SECRET: 'a-real-secret' });
     const fakePool = { query: vi.fn() } as unknown as import('pg').Pool;
 
     const deps = buildCasperGuardDeps(env, { pool: fakePool });
@@ -55,7 +55,7 @@ describe('buildCasperGuardDeps wires the vault-aware signer when a pool + vault 
   });
 
   it('without a pool passed in, the signer behaves exactly as before (no vault consultation, even with agentId)', async () => {
-    const env = loadEnv({ ...SCHEMA_MIN, CASPER_GUARD_VAULT_MASTER_SECRET: 'a-real-secret' } as never);
+    const env = loadEnv({ ...SCHEMA_MIN, CASPER_GUARD_VAULT_MASTER_SECRET: 'a-real-secret' });
     vi.mocked(readActiveDelegatedKey).mockClear();
 
     const deps = buildCasperGuardDeps(env);

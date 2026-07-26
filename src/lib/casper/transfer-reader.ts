@@ -146,6 +146,8 @@ export function createLiveTransferReader(cfg: { rpcUrl: string }): TransferReade
 /** Stub for tests / when RPC URL is not configured. Always returns not_found. */
 export function createStubTransferReader(): TransferReader {
   return {
+    // Must stay async to satisfy TransferReader; the live implementation awaits an RPC call.
+    // eslint-disable-next-line @typescript-eslint/require-await
     async findTransferByRefId() {
       return { found: false, reason: 'not_found' };
     },

@@ -18,7 +18,7 @@ const baseEnv = {
 
 describe('resolveCasperNetworkSlot', () => {
   it('returns testnet-slot values for casper:casper-test', () => {
-    const env = loadEnv(baseEnv as NodeJS.ProcessEnv);
+    const env = loadEnv(baseEnv);
     const slot = resolveCasperNetworkSlot(env, 'casper:casper-test');
     expect(slot.facilitatorRpcUrl).toBe('https://node.testnet.casper.network/rpc');
     expect(slot.operatorAccountHash).toBe('60854d9ea1bf41a111b3a60a46252ecf5c5a2f626fe4eec199b23c7d84fb4267');
@@ -26,7 +26,7 @@ describe('resolveCasperNetworkSlot', () => {
   });
 
   it('returns mainnet-slot values for casper:casper', () => {
-    const env = loadEnv(baseEnv as NodeJS.ProcessEnv);
+    const env = loadEnv(baseEnv);
     const slot = resolveCasperNetworkSlot(env, 'casper:casper');
     expect(slot.facilitatorRpcUrl).toBe('https://node.mainnet.casper.network/rpc');
     expect(slot.operatorAccountHash).toBe('f9765d218cf1ee95e92097658da1e23cadf1e401e3e7881e3937a2971ba94dd3');
@@ -45,7 +45,7 @@ describe('trade venue / network binding', () => {
   const PUBLIC_MAINNET = 'https://mcp.cspr.trade/mcp';
 
   it('rejects the public mainnet venue on the testnet slot', () => {
-    const env = loadEnv({ ...baseEnv, CSPR_TRADE_MCP_URL: PUBLIC_MAINNET } as NodeJS.ProcessEnv);
+    const env = loadEnv({ ...baseEnv, CSPR_TRADE_MCP_URL: PUBLIC_MAINNET });
     expect(() => buildCasperGuardDeps(env)).toThrow(/testnet.*MAINNET venue mcp\.cspr\.trade/is);
   });
 
@@ -57,7 +57,7 @@ describe('trade venue / network binding', () => {
       ...baseEnv,
       ...mainnetEnabled,
       CSPR_TRADE_MAINNET_MCP_URL: SELF_HOSTED_TESTNET,
-    } as NodeJS.ProcessEnv);
+    });
     expect(() => buildCasperGuardDeps(env)).toThrow(/not the public mainnet venue/i);
   });
 
@@ -67,12 +67,12 @@ describe('trade venue / network binding', () => {
       ...mainnetEnabled,
       CSPR_TRADE_MCP_URL: SELF_HOSTED_TESTNET,
       CSPR_TRADE_MAINNET_MCP_URL: PUBLIC_MAINNET,
-    } as NodeJS.ProcessEnv);
+    });
     expect(() => buildCasperGuardDeps(env)).not.toThrow();
   });
 
   it('accepts an unset venue on either slot (trade simply unavailable)', () => {
-    const env = loadEnv(baseEnv as NodeJS.ProcessEnv);
+    const env = loadEnv(baseEnv);
     expect(() => buildCasperGuardDeps(env)).not.toThrow();
   });
 });

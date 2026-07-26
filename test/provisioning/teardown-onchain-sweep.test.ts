@@ -28,7 +28,12 @@ function makeRedis(initial: Record<string, string> = {}) {
       store.set(k, v);
     },
     defineCommand() {},
-  } as never;
+  };
+  /*
+   * Returned WITHOUT an `as never` cast — that erased the fake's shape and broke every later
+   * `redis.get(...)` assertion. The `deps` object below is already cast where it meets the real
+   * interface, so nothing else needs to change.
+   */
 }
 
 const pool = { query: vi.fn(async () => ({ rowCount: 1, rows: [] })) } as never;
@@ -55,7 +60,7 @@ describe('teardownAgent on-chain WCSPR sweep', () => {
         agentAccountHash: '00agent',
         agentPublicKeyHex: 'pk',
       },
-    } as never);
+    });
     expect(res.sweptPending).toBe(0);
     expect(sweepFn).toHaveBeenCalledOnce();
     // no residual marker written
@@ -76,7 +81,7 @@ describe('teardownAgent on-chain WCSPR sweep', () => {
         agentPublicKeyHex: 'pk',
         residualAmountHint: '500000000',
       },
-    } as never);
+    });
     // teardown still returns a result (did not throw)
     expect(res).toMatchObject({ sweptPending: 0 });
     // residual marker recorded

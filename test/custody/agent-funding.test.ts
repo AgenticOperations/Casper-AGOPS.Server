@@ -55,7 +55,8 @@ describe('fundAgentOnChain', () => {
     const res = await fundAgentOnChain(deps, { agentAccountHash: AGENT, amountMotes: '3000000000' });
 
     expect(tokenCalls.map((c) => c.entryPoint)).toEqual(['deposit', 'transfer']);
-    expect(tokenCalls[0].args).toMatchObject({ amount: { clType: 'U512', value: '2000000000' } });
+    // Non-null: the entryPoint assertion above proves both calls were made.
+    expect(tokenCalls[0]!.args).toMatchObject({ amount: { clType: 'U512', value: '2000000000' } });
     expect(res.wrapTxHash).toBe('tok-deposit');
     expect(res.transferTxHash).toBe('tok-transfer');
   });

@@ -13,12 +13,12 @@ const MINIMAL = {
 
 describe('CASPER_GUARD_VAULT_MASTER_SECRET (Milestone B env wiring)', () => {
   it('defaults to empty string when unset', () => {
-    const env = loadEnv(MINIMAL as never);
+    const env = loadEnv(MINIMAL);
     expect(env.CASPER_GUARD_VAULT_MASTER_SECRET).toBe('');
   });
 
   it('is read through when set', () => {
-    const env = loadEnv({ ...MINIMAL, CASPER_GUARD_VAULT_MASTER_SECRET: 'a-real-secret' } as never);
+    const env = loadEnv({ ...MINIMAL, CASPER_GUARD_VAULT_MASTER_SECRET: 'a-real-secret' });
     expect(env.CASPER_GUARD_VAULT_MASTER_SECRET).toBe('a-real-secret');
   });
 });

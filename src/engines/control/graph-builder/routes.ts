@@ -77,7 +77,7 @@ export function registerGraphBuilderRoutes(app: FastifyInstance): void {
   // Built once per process, not per request — the client is a stateless HTTP wrapper, and the
   // key is static config. Stays null when unconfigured so the handler can 503 honestly.
   const client: GraphModelClient | null = env.GEMINI_API_KEY
-    ? (new GoogleGenAI({ apiKey: env.GEMINI_API_KEY }) as unknown as GraphModelClient)
+    ? (new GoogleGenAI({ apiKey: env.GEMINI_API_KEY }))
     : null;
 
   app.post('/v1/graph-builder/prompt-to-graph', async (request, reply) => {

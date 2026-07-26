@@ -1,6 +1,16 @@
 /**
  * Live testnet settlement e2e — authorize → settle via facilitator → reconcile → assert SETTLED.
  *
+ * ⚠️ STALE — this script does not currently run.
+ *
+ * It imports `buildCasperFacilitator`, which no longer exists: facilitator.ts now exports
+ * `buildHttpCasperFacilitator`, and that takes `{ facilitatorUrl, accessToken }` rather than the
+ * `{ pemPath, algorithm, rpcUrl }` passed below. The facilitator moved to the hosted CSPR.cloud
+ * transport, so this needs rewriting against the new seam rather than a rename.
+ *
+ * Left in place (not deleted) because it documents the intended end-to-end sequence, and excluded
+ * from lint in eslint.config.js so a known-broken manual script does not block CI.
+ *
  * Run (env must be loaded):
  *   node --env-file=.env --import tsx scripts/casper-settle-e2e.ts
  *

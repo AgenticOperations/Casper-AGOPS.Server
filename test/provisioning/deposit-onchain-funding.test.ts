@@ -49,7 +49,13 @@ function makeRedis(initial: Record<string, string> = {}) {
       store.set(reservedKey, (reserved + BigInt(requested)).toString());
       return 1;
     },
-  } as never;
+  };
+  /*
+   * Returned WITHOUT an `as never` cast. Casting the fake to `never` erased its shape, so every
+   * later `redis.get(...)` / `redis.hashes` read failed to typecheck ("Property 'get' does not
+   * exist on type 'never'"). The fake keeps its inferred type here; the cast to the real Redis
+   * interface happens at the single point of use, where only that assignment is unchecked.
+   */
 }
 
 const POLICY = {
@@ -100,7 +106,13 @@ describe('depositFor on-chain funding', () => {
   beforeEach(() => {
     gatewaySpy = vi.fn(async () => ({ id: 'txref-native' }));
     redis = makeRedis();
-    deps = { pool: {} as never, redis, gateway: { depositFor: gatewaySpy } as never };
+    // Cast only where the fake meets the real interface, so `redis` keeps its own shape for the
+    // assertions below.
+    deps = {
+      pool: {} as never,
+      redis: redis as unknown as ProvisionDeps['redis'],
+      gateway: { depositFor: gatewaySpy } as never,
+    };
   });
 
   it('reserve DENY → funding NOT called (ceiling gate precedes funding)', async () => {
@@ -111,7 +123,7 @@ describe('depositFor on-chain funding', () => {
       agentAccountHash: '00agent',
       funding,
       fundAgentOnChain: fundSpy,
-    } as never));
+    }));
     expect(res.outcome).toBe('DENY');
     expect(fundSpy).not.toHaveBeenCalled();
     expect(gatewaySpy).not.toHaveBeenCalled();
@@ -123,7 +135,7 @@ describe('depositFor on-chain funding', () => {
       agentAccountHash: '00agent',
       funding,
       fundAgentOnChain: fundSpy,
-    } as never));
+    }));
     expect(res.outcome).toBe('SUBMITTED');
     expect(fundSpy).toHaveBeenCalledWith(funding, { agentAccountHash: '00agent', amountMotes: '3000000000' });
     expect(await redis.get(keys.floatPending('agt1'))).toBe('3000000000');
@@ -141,7 +153,7 @@ describe('depositFor on-chain funding', () => {
       agentAccountHash: '00agent',
       funding,
       fundAgentOnChain: fundSpy,
-    } as never));
+    }));
     expect(res.outcome).toBe('FUNDING_FAILED');
     // reserve was compensated back to 0
     expect(await redis.get(keys.allocationReserved('org1'))).toBe('0');

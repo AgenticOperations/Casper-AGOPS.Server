@@ -93,7 +93,7 @@ export function compileGraphToConfig(graph: Graph): CompiledGraphConfig {
           slippageBps?: number;
           allowedPairs?: string[];
           riskLabels?: string[];
-        } = { kind: g.config.kind as SpendRailPermission };
+        } = { kind: g.config.kind };
         if (g.config.slippageBps !== undefined) guardrail.slippageBps = g.config.slippageBps;
         if (g.config.allowedPairs !== undefined) guardrail.allowedPairs = g.config.allowedPairs;
         if (g.config.riskLabels !== undefined) guardrail.riskLabels = g.config.riskLabels;

@@ -82,7 +82,7 @@ function sdkFlowDefinition(): TradingFlowDefinition {
         velocityLimitPerHour: 10,
       },
     ],
-  } as TradingFlowDefinition;
+  };
 }
 
 describe('J.3 canvas-deployed config is enforced identically to an SDK-created one', () => {

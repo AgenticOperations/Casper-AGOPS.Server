@@ -74,7 +74,7 @@ describe('route registration completeness', () => {
       DATABASE_URL: 'postgres://stub/stub',
       REDIS_URL: 'redis://stub:6379',
       GEMINI_API_KEY: 'test-key',
-    } as NodeJS.ProcessEnv);
+    });
     const app = buildApp({ env, pg: {} as never, redis: {} as never });
     await app.ready();
 
@@ -106,7 +106,7 @@ describe('route registration completeness', () => {
       DATABASE_URL: 'postgres://stub/stub',
       REDIS_URL: 'redis://stub:6379',
       GEMINI_API_KEY: 'test-key',
-    } as NodeJS.ProcessEnv);
+    });
     const app = buildApp({ env, pg: {} as never, redis: {} as never });
     await app.ready();
 

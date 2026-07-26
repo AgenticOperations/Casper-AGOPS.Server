@@ -470,7 +470,7 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
         };
       };
       try {
-        deployBody = await rpcPost('info_get_deploy', { deploy_hash: deployHash }) as typeof deployBody;
+        deployBody = await rpcPost('info_get_deploy', { deploy_hash: deployHash });
       } catch {
         return reply.code(502).send({ error: 'rpc_unreachable' });
       }

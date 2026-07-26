@@ -90,7 +90,7 @@ const fakeHeader = Buffer.from(JSON.stringify({
 })).toString('base64url');
 
 // Decision with no deploy hash (needs facilitator settlement)
-const unsettledDecision = baseDecision({ deployHash: null, txHash: null, signedHeaderValue: fakeHeader } as never);
+const unsettledDecision = baseDecision({ deployHash: null, txHash: null, signedHeaderValue: fakeHeader });
 
 describe('createFacilitatorSettlementReader', () => {
   it('calls facilitator.settle and returns settled with deploy hash on success', async () => {
@@ -154,7 +154,7 @@ describe('createFacilitatorSettlementReader', () => {
     };
     const rpcReader = { getDeploy: async () => ({ found: false }) };
     const reader = createFacilitatorSettlementReader(fac, rpcReader);
-    const deployDecision = baseDecision({ actionKind: 'casper-deploy' as never, deployHash: null, txHash: null, signedHeaderValue: fakeHeader } as never);
+    const deployDecision = baseDecision({ actionKind: 'casper-deploy' as never, deployHash: null, txHash: null, signedHeaderValue: fakeHeader });
     const r = await reader.read(deployDecision);
     // Falls through to RPC reader, no deploy hash → pending
     expect(r.status).toBe('pending');

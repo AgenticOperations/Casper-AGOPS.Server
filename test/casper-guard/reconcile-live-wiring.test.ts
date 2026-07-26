@@ -17,14 +17,14 @@ describe('buildCasperGuardDeps settlement wiring', () => {
     const env = loadEnv({
       ...BASE,
       CASPER_GUARD_FACILITATOR_RPC_URL: 'https://node.testnet.casper.network/rpc',
-    } as never);
+    });
     const deps = buildCasperGuardDeps(env);
     expect(deps.liveSettlement?.configured).toBe(true);
     expect(typeof deps.settlementReaderFactory).toBe('function');
   });
 
   it('stays honest-blocked (no factory, configured=false) when no rpc url is set', () => {
-    const env = loadEnv(BASE as never);
+    const env = loadEnv(BASE);
     const deps = buildCasperGuardDeps(env);
     expect(deps.liveSettlement?.configured).toBe(false);
     expect(deps.settlementReaderFactory).toBeUndefined();
@@ -34,7 +34,7 @@ describe('buildCasperGuardDeps settlement wiring', () => {
     const env = loadEnv({
       ...BASE,
       CASPER_GUARD_FACILITATOR_RPC_URL: 'https://node.testnet.casper.network/rpc',
-    } as never);
+    });
     const deps = buildCasperGuardDeps(env);
     const reader = deps.settlementReaderFactory!();
     expect(typeof reader.read).toBe('function');
@@ -47,7 +47,7 @@ describe('buildCasperGuardDeps settlement wiring', () => {
       CASPER_GUARD_FACILITATOR_URL: 'https://x402-facilitator.cspr.cloud',
       CASPER_GUARD_SIGNER_PEM_PATH: '/some/key.pem',
       CASPER_GUARD_SIGNER_MODE: 'local-testnet',
-    } as never);
+    });
     const deps = buildCasperGuardDeps(env);
     expect(deps.liveSettlement?.configured).toBe(true);
     expect(typeof deps.settlementReaderFactory).toBe('function');
@@ -61,7 +61,7 @@ describe('buildCasperGuardDeps settlement wiring', () => {
       ...BASE,
       CASPER_GUARD_FACILITATOR_RPC_URL: 'https://node.testnet.casper.network/rpc',
       // No CASPER_GUARD_FACILITATOR_URL
-    } as never);
+    });
     const deps = buildCasperGuardDeps(env);
     expect(typeof deps.settlementReaderFactory).toBe('function');
   });

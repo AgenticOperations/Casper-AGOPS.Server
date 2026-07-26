@@ -15,6 +15,6 @@ describe('resolveRequestNetwork', () => {
     expect(resolveRequestNetwork('casper:bogus')).toEqual({ ok: false });
   });
   it('rejects an array header', () => {
-    expect(resolveRequestNetwork(['casper:casper'] as unknown as string)).toEqual({ ok: false });
+    expect(resolveRequestNetwork(['casper:casper'])).toEqual({ ok: false });
   });
 });

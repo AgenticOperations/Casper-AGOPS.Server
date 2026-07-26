@@ -1,0 +1,41 @@
+{
+  // Lint-only project for files outside the app's build graph.
+  //
+  // tsconfig.json includes only src/**+test/**, and packages/agentops-sdk/tsconfig.json only src.
+  // Tooling configs, build scripts, root .mts utilities and the SDK's own tests therefore belong to
+  // no TypeScript project, so typescript-eslint cannot parse them and reports every one as an error.
+  //
+  // They can't simply be added to tsconfig.json: that would pull package tests into the app's
+  // typecheck and emit them into dist/. Routing them through a separate noEmit project gives
+  // ESLint the type information it needs while leaving `pnpm build` and `pnpm typecheck` untouched.
+  //
+  // Preferred over eslint's `allowDefaultProject`, which caps at 8 files and errors past it.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // These files are not part of the shipped app; unused locals in a spike script or a test
+    // fixture should not be a hard parse-time failure.
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "allowJs": true,
+    // DOM lib supplies Request/RequestInfo/Response for the SDK's fetch wrapper and its tests.
+    // The app's own tsconfig deliberately omits it (server-only); this project is lint-scope only,
+    // so widening it here cannot affect the build.
+    "lib": ["ES2022", "DOM"],
+    "noImplicitOverride": false,
+    // Tooling configs import JS packages that ship no types (e.g. eslint-config-prettier).
+    // Failing to resolve those makes ESLint see `error`-typed values and report false unsafe-*.
+    "noImplicitAny": false
+  },
+  "include": [
+    "eslint.config.js",
+    "vitest.config.ts",
+    "vitest.casper.config.ts",
+    "wrap-cspr.mts",
+    "scripts/**/*.ts",
+    "scripts/**/*.mjs",
+    "validation/**/*.mjs",
+    "packages/agentops-sdk/vitest.config.ts",
+    "packages/agentops-sdk/test/**/*.ts"
+  ]
+}

@@ -20,7 +20,7 @@ function app() {
     ...process.env,
     DATABASE_URL: 'postgres://stub/stub',
     REDIS_URL: 'redis://stub:6379',
-  } as NodeJS.ProcessEnv);
+  });
   return buildApp({ env, pg: {} as never, redis: {} as never });
 }
 

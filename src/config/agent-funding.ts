@@ -104,9 +104,16 @@ export async function buildAgentFundingDeps(
   return {
     tokenSubmitter,
     nativeSubmitter,
+    /*
+     * Safe to detach: createOnChainReaders returns standalone closures over its config, not methods
+     * on an object with state — the module contains no `this` at all. The rule flags the shape
+     * (method-position reference) rather than proving the binding is unused.
+     */
+    /* eslint-disable @typescript-eslint/unbound-method */
     readWcsprBalance: readers.readWcsprBalance,
     readOperatorWcsprBalance: readers.readOperatorWcsprBalance,
     readAccountPurseExists: readers.readAccountPurseExists,
+    /* eslint-enable @typescript-eslint/unbound-method */
     wcsprPackageHash,
     operatorAccountHash,
     dustMotes: '2500000000', // 2.5 CSPR — see plan Task 4 Step 5 DUST NOTE.

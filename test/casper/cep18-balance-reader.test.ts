@@ -30,7 +30,7 @@ describe('readAccountPurseExists', () => {
       wcsprPackageHash: WCSPR_PKG,
       operatorAccountHash: '00' + '00'.repeat(31) + '01',
       balancesUref: 'uref-abc-007',
-      fetchFn: fetchFn as never,
+      fetchFn: fetchFn,
     });
     expect(await readers.readAccountPurseExists(AGENT)).toBe(false);
   });
@@ -44,7 +44,7 @@ describe('readAccountPurseExists', () => {
       wcsprPackageHash: WCSPR_PKG,
       operatorAccountHash: '00' + '00'.repeat(31) + '01',
       balancesUref: 'uref-abc-007',
-      fetchFn: fetchFn as never,
+      fetchFn: fetchFn,
     });
     expect(await readers.readAccountPurseExists(AGENT)).toBe(true);
   });
@@ -63,7 +63,7 @@ describe('readWcsprBalance', () => {
       wcsprPackageHash: WCSPR_PKG,
       operatorAccountHash: '00' + '00'.repeat(31) + '01',
       balancesUref: 'uref-abc-007',
-      fetchFn: fetchFn as never,
+      fetchFn: fetchFn,
     });
     expect(await readers.readWcsprBalance(AGENT)).toBe(500000000n);
   });
@@ -80,7 +80,7 @@ describe('readWcsprBalance', () => {
       wcsprPackageHash: WCSPR_PKG,
       operatorAccountHash: '00' + '00'.repeat(31) + '01',
       balancesUref: 'uref-abc-007',
-      fetchFn: fetchFn as never,
+      fetchFn: fetchFn,
     });
     expect(await readers.readWcsprBalance(AGENT)).toBe(0n);
   });
@@ -100,7 +100,7 @@ describe('readWcsprBalance', () => {
       wcsprPackageHash: WCSPR_PKG,
       operatorAccountHash: '00' + '00'.repeat(31) + '01',
       balancesUref: 'uref-abc-007',
-      fetchFn: fetchFn as never,
+      fetchFn: fetchFn,
     });
     await readers.readWcsprBalance(AGENT);
     // base64 of the 33-byte Key (00 tag + 32-byte account hash), confirmed on testnet.

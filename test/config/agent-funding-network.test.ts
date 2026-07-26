@@ -29,7 +29,7 @@ const BASE = {
 
 describe('agent funding env is separated per network', () => {
   it('exposes a distinct mainnet WCSPR package hash', () => {
-    const env = loadEnv(BASE as NodeJS.ProcessEnv);
+    const env = loadEnv(BASE);
     expect(env.DEMO_CSPR_TOKEN_PACKAGE_HASH).toBe('b'.repeat(64));
     expect(env.DEMO_CSPR_MAINNET_TOKEN_PACKAGE_HASH).toBe('d'.repeat(64));
     // The bug this guards: one hash serving both networks.
@@ -37,14 +37,14 @@ describe('agent funding env is separated per network', () => {
   });
 
   it('keeps mainnet rpc and operator distinct from testnet', () => {
-    const env = loadEnv(BASE as NodeJS.ProcessEnv);
+    const env = loadEnv(BASE);
     expect(env.CASPER_GUARD_MAINNET_FACILITATOR_RPC_URL).not.toBe(env.CASPER_GUARD_FACILITATOR_RPC_URL);
     expect(env.CASPER_MAINNET_OPERATOR_ACCOUNT_HASH).not.toBe(env.CASPER_OPERATOR_ACCOUNT_HASH);
   });
 
   it('defaults the mainnet token hash to empty so mainnet funding stays off until set', () => {
     const { DEMO_CSPR_MAINNET_TOKEN_PACKAGE_HASH: _omitted, ...withoutMainnetToken } = BASE;
-    const env = loadEnv(withoutMainnetToken as NodeJS.ProcessEnv);
+    const env = loadEnv(withoutMainnetToken);
     // Empty → buildAgentFundingDeps returns undefined for mainnet → route skips on-chain funding
     // rather than falling back to the testnet slot and signing the wrong chain name.
     expect(env.DEMO_CSPR_MAINNET_TOKEN_PACKAGE_HASH).toBe('');
@@ -52,7 +52,7 @@ describe('agent funding env is separated per network', () => {
 
   it('rejects a malformed mainnet token hash instead of accepting it silently', () => {
     expect(() =>
-      loadEnv({ ...BASE, DEMO_CSPR_MAINNET_TOKEN_PACKAGE_HASH: 'not-a-hash' } as NodeJS.ProcessEnv),
+      loadEnv({ ...BASE, DEMO_CSPR_MAINNET_TOKEN_PACKAGE_HASH: 'not-a-hash' }),
     ).toThrow();
   });
 });

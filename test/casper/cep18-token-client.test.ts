@@ -11,10 +11,14 @@ describe('cep18-token-client arg builders', () => {
       recipientAccountHash: '001885b992e7a0b54b3511855a39b2facef09d96b57adf36411f3a4bfe84f4001a',
       amountMotes: '3000000000',
     });
-    expect(rec.recipient.kind).toBe('account-hash-key');
-    expect(rec.recipient.rawHash).toBe(
-      '1885b992e7a0b54b3511855a39b2facef09d96b57adf36411f3a4bfe84f4001a',
-    ); // 00 stripped
+    // Assert the whole object rather than reaching into one union member: ClTypedArg is a union,
+    // so `rec.recipient.kind` does not narrow on its own. Matching the full shape is also stricter —
+    // it catches an unexpected extra field, which a per-property check would miss.
+    expect(rec.recipient).toEqual({
+      kind: 'account-hash-key',
+      // 00 prefix stripped — Key.newKey("account-hash-…") wants the raw 64 hex.
+      rawHash: '1885b992e7a0b54b3511855a39b2facef09d96b57adf36411f3a4bfe84f4001a',
+    });
     expect(rec.amount).toEqual({ clType: 'U256', value: '3000000000' });
   });
 
@@ -161,7 +165,8 @@ describe('createLiveCep18CallSubmitter adapter', () => {
     expect(calls.signed).toBe(1);
     expect(calls.putTransaction).toBe(1);
     // runtimeArgs got the mapped CLValues under the same keys
-    const argMap = calls.fromMap[0];
+    // Non-null: the submitter ran to completion above (putTransaction === 1), so fromMap was called.
+    const argMap = calls.fromMap[0]!;
     expect(argMap.recipient).toEqual({ clKey: { key: expect.any(String) } });
     expect(argMap.amount).toEqual({ clU256: '3000000000' });
   });
@@ -173,7 +178,7 @@ describe('createLiveCep18CallSubmitter adapter', () => {
       pemPath: '/key.pem',
       algorithm: 'ed25519',
       importSdk: async () => sdk as never,
-      readFileSync: (() => 'PEM') as never,
+      readFileSync: (() => 'PEM'),
     });
 
     await submitter.call({

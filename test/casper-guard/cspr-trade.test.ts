@@ -70,13 +70,13 @@ describe('buildCasperGuardDeps trade executor wiring', () => {
   };
 
   it('always wires a tradeExecutor (honest-blocked by default with UnavailableCsprTradeClient)', () => {
-    const env = loadEnv(SCHEMA_MIN as never);
+    const env = loadEnv(SCHEMA_MIN);
     const deps = buildCasperGuardDeps(env);
     expect(typeof deps.tradeExecutor?.execute).toBe('function');
   });
 
   it('tradeExecutor rejects with CsprTradeUnavailableError when client is unavailable', async () => {
-    const env = loadEnv(SCHEMA_MIN as never);
+    const env = loadEnv(SCHEMA_MIN);
     const deps = buildCasperGuardDeps(env);
     await expect(
       deps.tradeExecutor!.execute({ intent: { pair: 'CSPR/USDC', amount: '1' } }),

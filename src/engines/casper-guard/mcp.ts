@@ -860,6 +860,8 @@ async function reconcileTool(
         deps.settlementReaderFactory(),
         () => ({ status: 'pending', source: 'casper-rpc' as const, evidence: {} }),
       )
+    // Reader interface is async; the live settlement reader awaits RPC.
+    // eslint-disable-next-line @typescript-eslint/require-await
     : { read: async () => ({ status: 'pending' as const, source: 'casper-rpc' as const, evidence: {} }) };
 
   const result = await reconcileCasperGuardDecision(

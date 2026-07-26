@@ -44,7 +44,7 @@ describe('createAgentOpsClient — attachTradingFlow (D-4②)', () => {
 
     const result = await client.attachTradingFlow({
       orgId: 'org_1',
-      flow: { name: 'solo-swapper', version: 1, roles: [] } as never,
+      flow: { name: 'solo-swapper', version: 1, roles: [] },
       roleAssignments: { trader: 'agt_1' },
     });
 
@@ -138,7 +138,7 @@ describe('createAgentOpsClient — authorize sync-default, async opt-in (D-4④)
       kind: 'action',
       agentId: 'agt_1',
       idempotencyKey: 'idem_3',
-      intent: { kind: 'cspr-trade', network: 'casper:casper-test', resource_id: 'cspr.trade:swap' } as never,
+      intent: { kind: 'cspr-trade', network: 'casper:casper-test', resource_id: 'cspr.trade:swap' },
     });
 
     expect(result).toMatchObject({ mode: 'sync', outcome: 'ALLOW', decision_id: 'cgd_3' });

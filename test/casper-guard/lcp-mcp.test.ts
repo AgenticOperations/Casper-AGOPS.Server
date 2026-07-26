@@ -18,7 +18,9 @@ import { lcpDiscover } from '../../src/lib/lcp/discover.js';
 
 function stubFetch(responses: Record<string, { status: number; body: string | object }>) {
   vi.stubGlobal('fetch', async (input: string | URL | Request) => {
-    const url = input.toString();
+    // Narrow before stringifying: `Request` has no meaningful toString() and would yield
+    // '[object Object]', silently missing every keyed response.
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const entry = responses[url];
     if (!entry) return new Response(null, { status: 404 });
     const body = typeof entry.body === 'string' ? entry.body : JSON.stringify(entry.body);

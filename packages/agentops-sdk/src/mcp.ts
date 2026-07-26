@@ -64,7 +64,7 @@ export function createAgentOpsMcpClient(config: AgentOpsMcpClientConfig): AgentO
 
     async callTool<T>(name: string, args: Record<string, unknown>) {
       const result = (await call('tools/call', { name, arguments: args })) as { content: Array<{ type: string; text: string }> };
-      return JSON.parse(result.content[0]!.text) as T;
+      return JSON.parse(result.content[0].text) as T;
     },
   };
 }

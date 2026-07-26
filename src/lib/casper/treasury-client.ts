@@ -53,6 +53,8 @@ const defaultSeams = (cfg: CasperTreasuryConfig): CasperTreasurySeams => {
     // MVP: Casper finality is fast/deterministic once included; a stricter finality read (matching
     // block height against a confirmation depth) is a future harden item — mirrors the honest,
     // no-blind-promote discipline of the Circle isFinal seam it replaces (never assume final on error).
+    // CasperTreasurySeams requires a Promise-returning seam; the real finality read awaits RPC.
+    // eslint-disable-next-line @typescript-eslint/require-await
     isTransferFinal: async () => true,
   };
 };

@@ -25,6 +25,8 @@ export interface AssociatedKeyVerifier {
 
 /** Test seam: returns exactly the given result, no network. */
 export function createStubAssociatedKeyVerifier(result: AssociatedKeyVerifyResult): AssociatedKeyVerifier {
+  // AssociatedKeyVerifier is async because the live verifier awaits a JSON-RPC call.
+  // eslint-disable-next-line @typescript-eslint/require-await
   return { verify: async () => result };
 }
 

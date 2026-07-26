@@ -33,7 +33,7 @@ describe('buildVaultSignedTransferAuthorization', () => {
       chainName: 'casper-test',
       maxTimeoutSeconds: 300,
       nowSeconds: now,
-      hashTypedData: hashTypedData as never,
+      hashTypedData: hashTypedData,
       buildDomain: buildDomain as never,
       randomNonce: () => new Uint8Array(32).fill(3),
     });
@@ -83,8 +83,8 @@ describe('buildVaultSignedTransferAuthorization', () => {
         assetContractHash: 'ab',
         chainName: 'casper-test',
         maxTimeoutSeconds: 300,
-        hashTypedData: (() => new Uint8Array(32)) as never,
-        buildDomain: (() => ({})) as never,
+        hashTypedData: (() => new Uint8Array(32)),
+        buildDomain: (() => ({})),
         randomNonce: () => new Uint8Array(16), // WRONG length
       }),
     ).rejects.toThrow(/32 bytes/);

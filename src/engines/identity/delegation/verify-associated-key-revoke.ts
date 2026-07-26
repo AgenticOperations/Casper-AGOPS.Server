@@ -28,6 +28,8 @@ export interface AssociatedKeyRevokeVerifier {
 export function createStubAssociatedKeyRevokeVerifier(
   result: AssociatedKeyRevokeVerifyResult,
 ): AssociatedKeyRevokeVerifier {
+  // Interface is async because the live verifier awaits RPC (see verify-associated-key.ts).
+  // eslint-disable-next-line @typescript-eslint/require-await
   return { verify: async () => result };
 }
 

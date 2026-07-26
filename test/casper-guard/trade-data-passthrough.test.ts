@@ -71,7 +71,7 @@ describe('trade data venue URLs by network', () => {
         ...BASE_ENV,
         CSPR_TRADE_MCP_URL: SELF_HOSTED_TESTNET,
         CSPR_TRADE_MAINNET_MCP_URL: PUBLIC_MAINNET,
-      } as NodeJS.ProcessEnv),
+      }),
     );
     expect(deps.tradeDataUrls?.['casper:casper-test']).toBe(SELF_HOSTED_TESTNET);
     expect(deps.tradeDataUrls?.['casper:casper']).toBe(PUBLIC_MAINNET);
@@ -81,7 +81,7 @@ describe('trade data venue URLs by network', () => {
 
   it('omits a venue that is not configured', () => {
     const deps = buildCasperGuardDeps(
-      loadEnv({ ...BASE_ENV, CSPR_TRADE_MCP_URL: SELF_HOSTED_TESTNET } as NodeJS.ProcessEnv),
+      loadEnv({ ...BASE_ENV, CSPR_TRADE_MCP_URL: SELF_HOSTED_TESTNET }),
     );
     expect(deps.tradeDataUrls?.['casper:casper-test']).toBe(SELF_HOSTED_TESTNET);
     expect(deps.tradeDataUrls?.['casper:casper']).toBeUndefined();
@@ -89,7 +89,7 @@ describe('trade data venue URLs by network', () => {
 
   it('leaves the x402 paid services untouched', () => {
     // The demo x402 services are a separate product surface from the trade venue passthrough.
-    const deps = buildCasperGuardDeps(loadEnv(BASE_ENV as NodeJS.ProcessEnv));
+    const deps = buildCasperGuardDeps(loadEnv(BASE_ENV));
     expect(deps.tradeDataUrls).toBeUndefined();
     expect(deps.mcpUrl).toBeDefined();
   });

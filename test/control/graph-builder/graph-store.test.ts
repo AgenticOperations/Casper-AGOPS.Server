@@ -29,7 +29,7 @@ describe('J graph-store tenant fencing', () => {
   it('saveGraph fences the ON CONFLICT update on org_id', async () => {
     const { pool, query } = fakePool([row]);
     await saveGraph(pool, { id: 'bg_1', orgId: 'org_a', name: 'solo', graph: { nodes: [], edges: [] } });
-    const sql = query.mock.calls[0]![0] as unknown as string;
+    const sql = query.mock.calls[0]![0];
     // Without this WHERE, ON CONFLICT DO UPDATE would happily overwrite another org's row.
     expect(sql).toMatch(/WHERE builder_graphs\.org_id = \$2/);
   });

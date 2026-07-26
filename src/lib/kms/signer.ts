@@ -77,6 +77,8 @@ export class UnknownRoleError extends Error {
 export class LocalKmsSigner implements KmsSigner {
   constructor(private readonly accounts: Partial<Record<SignerRole, Account>>) {}
 
+  // Interface method; the KMS-backed implementation awaits a remote call.
+  // eslint-disable-next-line @typescript-eslint/require-await
   async addressFor(role: SignerRole): Promise<Address> {
     const account = this.accounts[role];
     if (!account) throw new UnknownRoleError(role);

@@ -31,7 +31,7 @@ function mockFetchSuccess(): void {
         execution_info: { execution_result: { Version2: { error_message: null, transfers: ['transfer-1'] } } },
       },
     }),
-  })) as unknown as typeof fetch);
+  })));
 }
 
 let stores: Stores | null = null;
