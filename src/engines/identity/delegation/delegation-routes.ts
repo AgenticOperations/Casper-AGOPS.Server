@@ -1,11 +1,13 @@
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authForRoute } from '../access/route-guard.js';
+import { grantDelegatedKeyWithVault } from './grant-delegated-key-with-vault.js';
 import { attachTradingFlow } from '../../control/attach-trading-flow.js';
 import { createPolicyVersion, assignPolicy } from '../../control/store.js';
 import { revokeAgentDelegation } from './revoke-agent-delegation.js';
 import { suspendAgent } from '../../control/kill-switch.js';
-import { revokeDelegatedKey, readActiveDelegatedKeyRow } from './delegated-keys-store.js';
+import { revokeDelegatedKey, readActiveDelegatedKeyRow, grantDelegatedKey } from './delegated-keys-store.js';
 import { buildGrantDeployForBrowserSigning, buildRevokeDeployForBrowserSigning, accountHashFromPublicKeyHex } from './associated-keys.js';
 import { grantWasmBase64, revokeWasmBase64 } from './grant-wasm.js';
 import { resolveRequestNetwork, CASPER_NETWORK_HEADER } from '../../casper-guard/network-header.js';
@@ -90,6 +92,53 @@ export function registerDelegationRoutes(app: FastifyInstance): void {
     const row = await readActiveDelegatedKeyRow(pool, agentId);
     if (!row) return reply.code(200).send({ has_key: false, public_key: null, grant_state: null });
     return reply.code(200).send({ has_key: true, public_key: row.publicKey, grant_state: row.grantState });
+  });
+
+  /**
+   * Provision the proxy-side delegated keypair for an agent that has none.
+   *
+   * `POST /v1/agents` does this at creation time, but agents can exist without a key — created
+   * while no vault was configured, created by an earlier graph deploy that skipped this step, or
+   * left keyless by a vault outage. Those agents are otherwise stuck: every on-chain grant attempt
+   * answers `no_delegated_key`, and nothing in the product could ever give them one.
+   *
+   * Idempotent: an agent that already has an ACTIVE key gets that key back rather than a second
+   * one, so a double click cannot orphan the first keypair.
+   *
+   * This generates the AGENT's own keypair inside the vault. It is not a signer and never touches
+   * the user's master key — that signs the on-chain grant later, in the browser.
+   */
+  app.post('/v1/agents/:id/provision-delegated-key', async (request, reply) => {
+    const { pg: pool } = app.deps;
+    const auth = await authForRoute(app, request, 'admin');
+    if (!auth.ok) return reply.code(auth.code).send({ error: auth.reason });
+    const { id: agentId } = request.params as { id: string };
+
+    const owns = await pool.query('SELECT 1 FROM agents WHERE id = $1 AND org_id = $2', [
+      agentId,
+      auth.principal.orgId,
+    ]);
+    if (owns.rowCount === 0) return reply.code(404).send({ error: 'agent_not_found' });
+
+    const existing = await readActiveDelegatedKeyRow(pool, agentId);
+    if (existing) {
+      return reply
+        .code(200)
+        .send({ agent_id: agentId, public_key: existing.publicKey, grant_state: existing.grantState, created: false });
+    }
+
+    if (!app.deps.vault) return reply.code(503).send({ error: 'vault_not_configured' });
+
+    try {
+      const { publicKey } = await grantDelegatedKeyWithVault(
+        { pool, vault: app.deps.vault, grantDelegatedKey },
+        { id: `dk_${randomUUID()}`, agentId },
+      );
+      return reply.code(201).send({ agent_id: agentId, public_key: publicKey, grant_state: 'pending', created: true });
+    } catch (err) {
+      request.log.error({ err, agentId }, 'delegated-key provisioning failed');
+      return reply.code(500).send({ error: 'provision_failed' });
+    }
   });
 
   // D-2②(a): return the UNSIGNED grant deploy args + the WASM bytes (base64) for the browser/SDK

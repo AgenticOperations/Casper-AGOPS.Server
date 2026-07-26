@@ -39,6 +39,16 @@ export interface DeployGraphDeps {
   /** Passed straight through to attachTradingFlow; injected so tests can substitute fakes. */
   createPolicyVersion: typeof createPolicyVersion;
   assignPolicy: typeof assignPolicy;
+  /**
+   * Provisions the agent's proxy-side delegated keypair (vault-generated public key + the
+   * `delegated_keys` row). Absent when no vault is configured — the agent then stays custodial,
+   * exactly as `POST /v1/agents` behaves without a vault.
+   *
+   * This is NOT a signer and holds no user key material: it generates the AGENT's own keypair
+   * inside the vault. The user's master key is never involved here — it signs the on-chain grant
+   * later, in the browser.
+   */
+  provisionDelegatedKey?: (agentId: string) => Promise<{ publicKey: string }>;
 }
 
 export interface DeployedAgent {
@@ -123,8 +133,19 @@ export async function deployGraph(
   const agentNodes = graph.nodes.filter((n): n is Extract<typeof n, { type: 'Agent' }> => n.type === 'Agent');
   const nodeIdByRole = new Map(agentNodes.map((n) => [n.config.role, n.id]));
 
-  // 1. Create the real agents. Each returns its ag_ key exactly once.
-  const created: Array<{ nodeId: string; role: string; agentId: string; name: string; apiKey: string }> = [];
+  // 1. Create the real agents. Each returns its ag_ key exactly once, and each is immediately
+  //    given its proxy-side delegated keypair — the same pairing `POST /v1/agents` performs.
+  //    Without the keypair the agent has no public key to associate, so the on-chain grant step
+  //    fails later with `no_delegated_key` even though the deploy itself reported success.
+  const created: Array<{
+    nodeId: string;
+    role: string;
+    agentId: string;
+    name: string;
+    apiKey: string;
+    delegatedPublicKey?: string;
+  }> = [];
+
   for (const role of config.flow.roles) {
     const nodeId = nodeIdByRole.get(role.role);
     if (!nodeId) {
@@ -134,7 +155,26 @@ export async function deployGraph(
       orgId: input.orgId,
       name: role.agentName,
     });
-    created.push({ nodeId, role: role.role, agentId: agent.id, name: role.agentName, apiKey: apiKey.token });
+
+    // Mirrors agent-routes.ts: a vault blip must NOT fail agent creation. The agent stays
+    // custodial and the key can be provisioned later, rather than losing the whole fleet.
+    let delegatedPublicKey: string | undefined;
+    if (deps.provisionDelegatedKey) {
+      try {
+        delegatedPublicKey = (await deps.provisionDelegatedKey(agent.id)).publicKey;
+      } catch {
+        delegatedPublicKey = undefined;
+      }
+    }
+
+    created.push({
+      nodeId,
+      role: role.role,
+      agentId: agent.id,
+      name: role.agentName,
+      apiKey: apiKey.token,
+      ...(delegatedPublicKey ? { delegatedPublicKey } : {}),
+    });
   }
 
   // 2. Attach the compiled flow — this is the step with actual teeth. It writes append-only policy
@@ -155,6 +195,7 @@ export async function deployGraph(
     name: c.name,
     apiKey: c.apiKey,
     policyId: attached.roleAssignments[c.role]?.policyId ?? '',
+    ...(c.delegatedPublicKey ? { delegatedPublicKey: c.delegatedPublicKey } : {}),
   }));
 
   // 3. Surface the grants that still need a master-key signature. We return handles only — the
@@ -165,7 +206,10 @@ export async function deployGraph(
   for (const node of graph.nodes) {
     if (node.type !== 'DelegatedKeyGrant') continue;
     const target = agentIdByNodeId.get(node.config.agentRef);
-    if (target) {
+    // Only offer to sign a grant for an agent that HAS a delegated key. Listing one without a key
+    // sends the user to a wallet prompt that can only fail with `no_delegated_key` — better to
+    // omit it than to promise an action the backend will refuse.
+    if (target?.delegatedPublicKey) {
       pendingGrants.push({ nodeId: node.id, agentId: target.agentId, agentName: target.name });
     }
   }

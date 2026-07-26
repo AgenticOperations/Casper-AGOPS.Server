@@ -68,13 +68,18 @@ function makeDeps() {
       return { roleAssignments };
     },
   );
+  // Stands in for the vault-backed keypair generator. A deployment with no vault passes
+  // `provisionDelegatedKey: undefined`, which is the custodial path exercised separately below.
+  const provisionDelegatedKey = vi.fn(async (agentId: string) => ({ publicKey: `01pub_${agentId}` }));
+
   return {
     pool: {} as pg.Pool,
     registerAgent: registerAgent as never,
     attachTradingFlow: attachTradingFlow as never,
     createPolicyVersion: vi.fn() as never,
     assignPolicy: vi.fn() as never,
-    _spies: { registerAgent, attachTradingFlow },
+    provisionDelegatedKey,
+    _spies: { registerAgent, attachTradingFlow, provisionDelegatedKey },
   };
 }
 
@@ -107,6 +112,45 @@ describe('J.1 deployGraph', () => {
     const deps = makeDeps();
     const result = await deployGraph(deps, { orgId: 'org_x', graphId: 'bg_1', rawGraph: traderGraph() });
     expect(result.pendingGrants).toEqual([{ nodeId: 'grant-1', agentId: 'ag-1', agentName: 'trader' }]);
+  });
+
+  /**
+   * Regression: deploy created agents but never provisioned their delegated keypair, so the
+   * on-chain grant step failed with `no_delegated_key` — after the deploy had already reported
+   * success. `POST /v1/agents` had always paired these two; the graph deploy path had not.
+   */
+  it('provisions a delegated keypair for every agent it creates', async () => {
+    const deps = makeDeps();
+    const result = await deployGraph(deps, { orgId: 'org_x', graphId: 'bg_1', rawGraph: traderGraph() });
+
+    expect(deps._spies.provisionDelegatedKey).toHaveBeenCalledTimes(1);
+    expect(deps._spies.provisionDelegatedKey).toHaveBeenCalledWith('ag-1');
+    expect(result.agents[0]?.delegatedPublicKey).toBe('01pub_ag-1');
+  });
+
+  it('omits a grant whose agent has NO delegated key, rather than offering a doomed wallet prompt', async () => {
+    // No vault configured → no keypair → grant-init would answer 409 no_delegated_key. The key is
+    // OMITTED rather than set to undefined, matching how the route builds deps under
+    // exactOptionalPropertyTypes.
+    const { provisionDelegatedKey: _omitted, ...deps } = makeDeps();
+    const result = await deployGraph(deps, { orgId: 'org_x', graphId: 'bg_1', rawGraph: traderGraph() });
+
+    expect(result.agents).toHaveLength(1);
+    expect(result.agents[0]?.delegatedPublicKey).toBeUndefined();
+    expect(result.pendingGrants).toEqual([]);
+  });
+
+  it('still creates the fleet when key provisioning fails — a vault blip must not lose the agents', async () => {
+    const deps = makeDeps();
+    deps.provisionDelegatedKey = vi.fn(async () => {
+      throw new Error('vault unreachable');
+    });
+
+    const result = await deployGraph(deps, { orgId: 'org_x', graphId: 'bg_1', rawGraph: traderGraph() });
+
+    expect(result.agents).toHaveLength(1);
+    expect(result.agents[0]?.policyId).toBe('pol-trader');
+    expect(result.pendingGrants).toEqual([]);
   });
 
   it('rejects an invalid graph WITHOUT creating anything (fail closed)', async () => {

@@ -9,6 +9,8 @@ import { saveGraph, markGraphDeployed, getGraph, listGraphs } from './graph-stor
 import { validateGraph } from './validate.js';
 import { registerAgent, createPolicyVersion, assignPolicy } from '../store.js';
 import { attachTradingFlow } from '../attach-trading-flow.js';
+import { grantDelegatedKey } from '../../identity/delegation/delegated-keys-store.js';
+import { grantDelegatedKeyWithVault } from '../../identity/delegation/grant-delegated-key-with-vault.js';
 
 /**
  * H.1 — server-side endpoint wrapping promptToGraph(prompt). Auth follows the existing
@@ -186,8 +188,23 @@ export function registerGraphBuilderRoutes(app: FastifyInstance): void {
     }
 
     try {
+      // Provision each agent's proxy-side delegated keypair exactly as POST /v1/agents does.
+      // Omitted when no vault is configured, which leaves agents custodial rather than failing.
+      const vault = app.deps.vault;
       const result = await deployGraph(
-        { pool, registerAgent, attachTradingFlow, createPolicyVersion, assignPolicy },
+        {
+          pool,
+          registerAgent,
+          attachTradingFlow,
+          createPolicyVersion,
+          assignPolicy,
+          ...(vault
+            ? {
+                provisionDelegatedKey: (agentId: string) =>
+                  grantDelegatedKeyWithVault({ pool, vault, grantDelegatedKey }, { id: `dk_${randomUUID()}`, agentId }),
+              }
+            : {}),
+        },
         { orgId, graphId, rawGraph: parsed.data.graph, name: parsed.data.name },
       );
 
