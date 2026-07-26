@@ -72,7 +72,7 @@ export async function resolveWcsprBalancesUref(input: {
   packageHash: string;
   fetchFn?: FetchLike;
 }): Promise<string | null> {
-  const fetchFn = input.fetchFn ?? (globalThis.fetch);
+  const fetchFn = input.fetchFn ?? globalThis.fetch;
   const pkg = await rpc(fetchFn, input.rpcUrl, 'query_global_state', {
     state_identifier: null,
     key: `hash-${input.packageHash}`,
@@ -102,7 +102,7 @@ export async function resolveWcsprBalancesUref(input: {
 }
 
 export function createOnChainReaders(cfg: OnChainReadersConfig): OnChainReaders {
-  const fetchFn = cfg.fetchFn ?? (globalThis.fetch);
+  const fetchFn = cfg.fetchFn ?? globalThis.fetch;
 
   async function readAccountPurseExists(accountHash: string): Promise<boolean> {
     const raw = stripPrefix(accountHash);

@@ -105,7 +105,7 @@ type CasperSdk = {
 const importSdkDefault = async (): Promise<CasperSdk> => {
   // casper-js-sdk ships as CJS, so ESM dynamic import wraps it under .default.
   const mod = (await import(/* @vite-ignore */ 'casper-js-sdk')) as { default?: CasperSdk } & CasperSdk;
-  return (mod.default ?? mod);
+  return mod.default ?? mod;
 };
 
 function hexToByteArray(hex: string): number[] {

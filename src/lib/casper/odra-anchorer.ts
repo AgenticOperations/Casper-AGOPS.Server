@@ -61,7 +61,7 @@ const importRuntime = (s: string): Promise<unknown> => import(/* @vite-ignore */
 const importSdk = async (): Promise<CasperSdk> => {
   const mod = await importRuntime('casper-js-sdk') as { default?: CasperSdk } & CasperSdk;
   // casper-js-sdk ships as CJS, so ESM dynamic import wraps it under .default
-  return (mod.default ?? mod);
+  return mod.default ?? mod;
 };
 
 /**
