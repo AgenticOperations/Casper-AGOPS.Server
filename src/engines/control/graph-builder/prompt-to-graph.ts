@@ -76,6 +76,11 @@ Every Agent must sit under exactly one Fleet under one OrgCeiling. Agent sub-cap
 perAgentMax. A trader Agent (one whose allowedActions includes "cspr-trade") MUST have a cspr-trade Guardrail
 attached via a "governed-by" edge.
 
+EVERY Agent MUST also have its own DelegatedKeyGrant, attached with an "attaches-to" edge from the Agent to the
+grant, with "agentRef" set to that Agent's NODE id and "status":"pending". Without it the agent has no on-chain
+authority to act with — it would exist only as a database row, and the user would never be prompted to sign the
+key grant that makes it real on Casper. Emit one grant per Agent, always.
+
 Two reference fleet template shapes (few-shot; anchor your output on these when the prompt is close to one):
 
 Template "data-risk-trader" — a data agent + risk agent (casper-x402 only) feeding a trader (cspr-trade only):
@@ -86,14 +91,20 @@ Template "data-risk-trader" — a data agent + risk agent (casper-x402 only) fee
     {"id":"agent-data","type":"Agent","config":{"name":"data","role":"data","allowedActions":["casper-x402"],"serviceScope":["svc:market-data"],"subCap":"<N>","velocityLimitPerHour":60}},
     {"id":"agent-risk","type":"Agent","config":{"name":"risk","role":"risk","allowedActions":["casper-x402"],"serviceScope":["svc:risk-oracle"],"subCap":"<N>","velocityLimitPerHour":30}},
     {"id":"agent-trader","type":"Agent","config":{"name":"trader","role":"trader","allowedActions":["cspr-trade"],"serviceScope":["cspr.trade:swap"],"subCap":"<N>","velocityLimitPerHour":10}},
-    {"id":"guard-trader","type":"Guardrail","config":{"kind":"cspr-trade","slippageBps":100,"allowedPairs":["CSPR/wETH"]}}
+    {"id":"guard-trader","type":"Guardrail","config":{"kind":"cspr-trade","slippageBps":100,"allowedPairs":["CSPR/wETH"]}},
+    {"id":"grant-data","type":"DelegatedKeyGrant","config":{"agentRef":"agent-data","weight":1,"status":"pending"}},
+    {"id":"grant-risk","type":"DelegatedKeyGrant","config":{"agentRef":"agent-risk","weight":1,"status":"pending"}},
+    {"id":"grant-trader","type":"DelegatedKeyGrant","config":{"agentRef":"agent-trader","weight":1,"status":"pending"}}
   ],
   "edges": [
     {"from":"org-1","to":"fleet-1","kind":"contains"},
     {"from":"fleet-1","to":"agent-data","kind":"contains"},
     {"from":"fleet-1","to":"agent-risk","kind":"contains"},
     {"from":"fleet-1","to":"agent-trader","kind":"contains"},
-    {"from":"agent-trader","to":"guard-trader","kind":"governed-by"}
+    {"from":"agent-trader","to":"guard-trader","kind":"governed-by"},
+    {"from":"agent-data","to":"grant-data","kind":"attaches-to"},
+    {"from":"agent-risk","to":"grant-risk","kind":"attaches-to"},
+    {"from":"agent-trader","to":"grant-trader","kind":"attaches-to"}
   ]
 }
 
@@ -103,12 +114,14 @@ Template "solo-swapper" — a single trading agent with guardrails:
     {"id":"org-1","type":"OrgCeiling","config":{"totalBudget":"<N>","perAgentMax":"<N>","cooldownSeconds":0,"allowedDestinations":[]}},
     {"id":"fleet-1","type":"Fleet","config":{"name":"solo-swapper"}},
     {"id":"agent-trader","type":"Agent","config":{"name":"trader","role":"trader","allowedActions":["cspr-trade"],"serviceScope":["cspr.trade:swap"],"subCap":"<N>","velocityLimitPerHour":10}},
-    {"id":"guard-trader","type":"Guardrail","config":{"kind":"cspr-trade","slippageBps":100}}
+    {"id":"guard-trader","type":"Guardrail","config":{"kind":"cspr-trade","slippageBps":100}},
+    {"id":"grant-trader","type":"DelegatedKeyGrant","config":{"agentRef":"agent-trader","weight":1,"status":"pending"}}
   ],
   "edges": [
     {"from":"org-1","to":"fleet-1","kind":"contains"},
     {"from":"fleet-1","to":"agent-trader","kind":"contains"},
-    {"from":"agent-trader","to":"guard-trader","kind":"governed-by"}
+    {"from":"agent-trader","to":"guard-trader","kind":"governed-by"},
+    {"from":"agent-trader","to":"grant-trader","kind":"attaches-to"}
   ]
 }
 
