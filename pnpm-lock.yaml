@@ -25,8 +25,8 @@ importers:
         specifier: ^1.0.0
         version: 1.0.0
       '@x402/core':
-        specifier: 2.15.0
-        version: 2.15.0
+        specifier: 2.19.0
+        version: 2.19.0
       casper-js-sdk:
         specifier: 5.0.12
         version: 5.0.12(patch_hash=c390c59b1f1f336e4afda1d681090b393bce726cf02eaeef3a5503699b630064)
@@ -762,6 +762,9 @@ packages:
 
   '@x402/core@2.15.0':
     resolution: {integrity: sha512-Hwop1cu80sf3H4dpNdiMJt7ay30Jf7JUjgx7dXHxQm/nYqOjTcm71FC/ZhpnIpeg6RSAUt7EI/rFTXx/lafHhw==}
+
+  '@x402/core@2.19.0':
+    resolution: {integrity: sha512-IPQIHzIrwvbri1339QWHvwtiTTDbGsrF5Yff0LZfufmVXNdOSYbjY8oz6vZg7+4W13f7/k81NUMAFoDOU4gswQ==}
 
   abitype@1.2.3:
     resolution: {integrity: sha512-Ofer5QUnuUdTFsBRwARMoWKOH1ND5ehwYhJ3OJ/BQO+StkwQjHw0XyVh4vDttzHB7QOFhPHa/o413PJ82gU/Tg==}
@@ -3059,6 +3062,10 @@ snapshots:
       tinyrainbow: 2.0.0
 
   '@x402/core@2.15.0':
+    dependencies:
+      zod: 3.25.76
+
+  '@x402/core@2.19.0':
     dependencies:
       zod: 3.25.76
 
